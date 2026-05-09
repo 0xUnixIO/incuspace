@@ -73,7 +73,18 @@ export const api = {
           body: JSON.stringify({ key_ids: keyIds }),
         }),
     },
+    proxyRules: {
+      list: (name: string) => request<ProxyRule[]>(`/instances/${name}/proxy-rules`),
+      add: (name: string, hostPort: number, containerPort: number, protocol = "tcp") =>
+        request<Operation>(`/instances/${name}/proxy-rules`, {
+          method: "POST",
+          body: JSON.stringify({ host_port: hostPort, container_port: containerPort, protocol }),
+        }),
+      delete: (name: string, devName: string) =>
+        request<Operation>(`/instances/${name}/proxy-rules/${devName}`, { method: "DELETE" }),
+    },
   },
+  hostInfo: () => request<{ ip: string }>("/host-info"),
   images: {
     list: () => request<Image[]>("/images"),
     listRemote: (server = "https://images.linuxcontainers.org") =>
@@ -186,6 +197,13 @@ export interface CreateInstanceRequest {
   profiles?: string[];
   config?: Record<string, string>;
   ssh_key_ids?: string[];
+}
+
+export interface ProxyRule {
+  name: string;
+  protocol: string;
+  host_port: number;
+  container_port: number;
 }
 
 export interface SSHKey {

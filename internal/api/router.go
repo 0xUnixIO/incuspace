@@ -68,6 +68,14 @@ func Register(r chi.Router, client *incus.Client, keys *sshkeys.Store) {
 			// 实例 SSH 公钥（直接读写 authorized_keys）
 			r.Get("/instances/{name}/ssh-keys", h.GetInstanceSSHKeys)
 			r.Put("/instances/{name}/ssh-keys", h.PutInstanceSSHKeys)
+
+			// 端口转发规则
+			r.Get("/instances/{name}/proxy-rules", h.ListProxyRules)
+			r.Post("/instances/{name}/proxy-rules", h.AddProxyRule)
+			r.Delete("/instances/{name}/proxy-rules/{devname}", h.DeleteProxyRule)
+
+			// 宿主机信息
+			r.Get("/host-info", h.HostInfo)
 		})
 	})
 }

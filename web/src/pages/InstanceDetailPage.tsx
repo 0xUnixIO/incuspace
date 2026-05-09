@@ -6,10 +6,10 @@ import {
 } from "recharts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { api, type InstanceState, type Snapshot, type SSHKey } from "../lib/api";
+import { api, type InstanceState, type Snapshot, type SSHKey, type ProxyRule } from "../lib/api";
 import { formatBytes, formatPercent } from "../lib/utils";
 import { cn } from "../lib/utils";
-import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw, KeyRound, Check } from "lucide-react";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw, KeyRound, Check, GitMerge, Copy } from "lucide-react";
 
 const MAX_POINTS = 60;
 const INTERVAL_MS = 2000;
@@ -305,6 +305,9 @@ export default function InstanceDetailPage() {
         </ChartCard>
       </div>
 
+      {/* 端口转发 */}
+      <ProxyRulesPanel instanceName={name!} />
+
       {/* SSH 公钥 */}
       <InstanceSSHKeys instanceName={name!} />
 
@@ -482,6 +485,199 @@ function NetworkTooltip({ active, payload, label }: any) {
 }
 
 const inputCls = "w-full bg-input border border-border rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring";
+
+function ProxyRulesPanel({ instanceName }: { instanceName: string }) {
+  const qc = useQueryClient();
+  const [showForm, setShowForm] = useState(false);
+  const [hostPort, setHostPort] = useState("");
+  const [containerPort, setContainerPort] = useState("");
+  const [protocol, setProtocol] = useState<"tcp" | "udp">("tcp");
+  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+
+  const { data: rules = [] } = useQuery<ProxyRule[]>({
+    queryKey: ["proxy-rules", instanceName],
+    queryFn: () => api.instances.proxyRules.list(instanceName),
+  });
+
+  const { data: hostInfo } = useQuery({
+    queryKey: ["host-info"],
+    queryFn: api.hostInfo,
+    staleTime: Infinity,
+  });
+
+  const hostIP = hostInfo?.ip ?? "<宿主机IP>";
+
+  const addMutation = useMutation({
+    mutationFn: () =>
+      api.instances.proxyRules.add(instanceName, Number(hostPort), Number(containerPort), protocol),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["proxy-rules", instanceName] });
+      toast.success("端口转发已添加");
+      setHostPort("");
+      setContainerPort("");
+      setShowForm(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (devName: string) => api.instances.proxyRules.delete(instanceName, devName),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["proxy-rules", instanceName] });
+      toast.success("已删除");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  function connCmd(rule: ProxyRule) {
+    if (rule.container_port === 22 && rule.protocol === "tcp") {
+      return `ssh -p ${rule.host_port} root@${hostIP}`;
+    }
+    return `${hostIP}:${rule.host_port} → 容器:${rule.container_port}`;
+  }
+
+  function handleCopy(cmd: string) {
+    navigator.clipboard.writeText(cmd).then(() => {
+      setCopiedCmd(cmd);
+      setTimeout(() => setCopiedCmd(null), 1500);
+    });
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hostPort || !containerPort) return;
+    addMutation.mutate();
+  }
+
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+        <div className="flex items-center gap-2">
+          <GitMerge className="w-4 h-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">端口转发</h3>
+        </div>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          添加规则
+        </button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={handleSubmit} className="px-4 py-3 border-b border-border bg-muted/10 flex items-end gap-2">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">宿主机端口</label>
+            <input
+              value={hostPort}
+              onChange={(e) => setHostPort(e.target.value)}
+              placeholder="2222"
+              type="number"
+              min={1}
+              max={65535}
+              className={cn(inputCls, "w-28")}
+              autoFocus
+            />
+          </div>
+          <div className="pb-0.5 text-muted-foreground text-sm">→</div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">容器端口</label>
+            <input
+              value={containerPort}
+              onChange={(e) => setContainerPort(e.target.value)}
+              placeholder="22"
+              type="number"
+              min={1}
+              max={65535}
+              className={cn(inputCls, "w-28")}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">协议</label>
+            <select
+              value={protocol}
+              onChange={(e) => setProtocol(e.target.value as "tcp" | "udp")}
+              className={cn(inputCls, "w-20")}
+            >
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+          <button
+            type="submit"
+            disabled={addMutation.isPending || !hostPort || !containerPort}
+            className="px-3 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-colors"
+          >
+            {addMutation.isPending ? "..." : "添加"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowForm(false)}
+            className="px-3 py-2 text-sm border border-border rounded-md text-muted-foreground hover:text-foreground transition-colors"
+          >
+            取消
+          </button>
+        </form>
+      )}
+
+      {rules.length === 0 ? (
+        <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+          暂无端口转发规则
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="border-b border-border">
+            <tr>
+              <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">宿主机端口</th>
+              <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">容器端口</th>
+              <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">协议</th>
+              <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">连接命令</th>
+              <th className="px-4 py-2.5" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rules.map((rule) => {
+              const cmd = connCmd(rule);
+              const isCopied = copiedCmd === cmd;
+              return (
+                <tr key={rule.name} className="hover:bg-accent/30 transition-colors">
+                  <td className="px-4 py-3 font-mono font-medium">{rule.host_port}</td>
+                  <td className="px-4 py-3 font-mono text-muted-foreground">{rule.container_port}</td>
+                  <td className="px-4 py-3 text-muted-foreground uppercase text-xs">{rule.protocol}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => handleCopy(cmd)}
+                      title="复制"
+                      className="flex items-center gap-1.5 font-mono text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    >
+                      {isCopied
+                        ? <Check className="w-3.5 h-3.5 text-green-400" />
+                        : <Copy className="w-3.5 h-3.5" />}
+                      <span>{cmd}</span>
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => {
+                        if (confirm(`确认删除端口 ${rule.host_port} 的转发规则？`))
+                          deleteMutation.mutate(rule.name);
+                      }}
+                      disabled={deleteMutation.isPending}
+                      className="p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 function InstanceSSHKeys({ instanceName }: { instanceName: string }) {
   const qc = useQueryClient();
