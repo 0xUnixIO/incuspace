@@ -164,7 +164,7 @@ function PullImageDialog({
   const allAliases = useMemo(() => {
     const rows: { alias: string; os: string; arch: string; type: string }[] = [];
     for (const img of remoteImages) {
-      for (const a of img.aliases) {
+      for (const a of img.aliases ?? []) {
         rows.push({
           alias: a.name,
           os: img.properties?.os ?? "",
