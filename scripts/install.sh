@@ -71,14 +71,25 @@ install_panel() {
     *)       error "不支持的架构: $ARCH" ;;
   esac
 
-  DOWNLOAD_URL="https://github.com/0xUnixIO/incuspace/releases/download/${PANEL_VERSION}/incuspace-linux-${ARCH_TAG}"
+  # 解析实际版本号（latest → 具体 tag）
+  if [[ "$PANEL_VERSION" == "latest" ]]; then
+    PANEL_VERSION=$(curl -fsSL "https://api.github.com/repos/0xUnixIO/incuspace/releases/latest" \
+      | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+  fi
+
   mkdir -p "$PANEL_DIR"
 
-  if [[ "$PANEL_VERSION" == "latest" ]] || ! curl -fsSL "$DOWNLOAD_URL" -o "$PANEL_DIR/incuspace" 2>/dev/null; then
-    warn "未找到预编译包，尝试从源码构建..."
-    build_from_source
+  if [[ -n "$PANEL_VERSION" ]]; then
+    DOWNLOAD_URL="https://github.com/0xUnixIO/incuspace/releases/download/${PANEL_VERSION}/incuspace-linux-${ARCH_TAG}"
+    if curl -fsSL "$DOWNLOAD_URL" -o "$PANEL_DIR/incuspace" 2>/dev/null; then
+      chmod +x "$PANEL_DIR/incuspace"
+    else
+      warn "未找到预编译包（${PANEL_VERSION}），尝试从源码构建..."
+      build_from_source
+    fi
   else
-    chmod +x "$PANEL_DIR/incuspace"
+    warn "无法获取版本信息，尝试从源码构建..."
+    build_from_source
   fi
 
   # 创建系统用户
