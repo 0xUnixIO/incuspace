@@ -143,6 +143,7 @@ const COMMON_IMAGES = [
   { label: "Ubuntu 22.04 LTS", value: "ubuntu/22.04" },
   { label: "Debian 12", value: "debian/12" },
   { label: "Alpine 3.20", value: "alpine/3.20" },
+  { label: "OpenWrt 23.05", value: "openwrt/23.05" },
   { label: "自定义...", value: "__custom__" },
 ];
 
