@@ -42,6 +42,11 @@ export const api = {
     delete: (name: string) =>
       request<Operation>(`/instances/${name}`, { method: "DELETE" }),
     state: (name: string) => request<InstanceState>(`/instances/${name}/state`),
+    updateConfig: (name: string, config: Record<string, string>, description?: string) =>
+      request<Operation>(`/instances/${name}/config`, {
+        method: "PATCH",
+        body: JSON.stringify({ config, description }),
+      }),
   },
   images: {
     list: () => request<Image[]>("/images"),

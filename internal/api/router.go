@@ -25,6 +25,7 @@ func Register(r chi.Router, client *incus.Client) {
 			r.Get("/instances", h.ListInstances)
 			r.Post("/instances", h.CreateInstance)
 			r.Get("/instances/{name}", h.GetInstance)
+			r.Patch("/instances/{name}/config", h.PatchInstanceConfig)
 			r.Delete("/instances/{name}", h.DeleteInstance)
 			r.Put("/instances/{name}/action", h.InstanceAction)
 			r.Get("/instances/{name}/state", h.GetInstanceState)

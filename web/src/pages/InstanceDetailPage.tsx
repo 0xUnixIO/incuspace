@@ -1,12 +1,14 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
+import * as Dialog from "@radix-ui/react-dialog";
+import { toast } from "sonner";
 import { api, type InstanceState } from "../lib/api";
 import { formatBytes, formatPercent } from "../lib/utils";
-import { ArrowLeft, Cpu, MemoryStick, Network, Terminal } from "lucide-react";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, Pencil, X } from "lucide-react";
 
 const MAX_POINTS = 60;
 const INTERVAL_MS = 2000;
@@ -28,6 +30,9 @@ export default function InstanceDetailPage() {
   const [points, setPoints] = useState<DataPoint[]>([]);
   const prevRef = useRef<{ cpuNs: number; rxBytes: number; txBytes: number; ts: number } | null>(null);
   const lastStateRef = useRef<InstanceState | null>(null);
+
+  const qc = useQueryClient();
+  const [editOpen, setEditOpen] = useState(false);
 
   const { data: instance } = useQuery({
     queryKey: ["instance", name],
@@ -147,7 +152,17 @@ export default function InstanceDetailPage() {
             />
           </InfoCard>
 
-          <InfoCard title="资源配置">
+          <InfoCard
+            title="资源配置"
+            action={
+              <button
+                onClick={() => setEditOpen(true)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            }
+          >
             <InfoRow
               label="CPU 限制"
               value={instance.config?.["limits.cpu"] || "不限制"}
@@ -255,16 +270,29 @@ export default function InstanceDetailPage() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+      {instance && (
+        <EditConfigDialog
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          instanceName={name!}
+          currentCpu={instance.config?.["limits.cpu"] ?? ""}
+          currentMem={instance.config?.["limits.memory"] ?? ""}
+          onSaved={() => qc.invalidateQueries({ queryKey: ["instance", name] })}
+        />
+      )}
     </div>
   );
 }
 
 // --- 子组件 ---
 
-function InfoCard({ title, children }: { title: string; children: React.ReactNode }) {
+function InfoCard({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="border border-border rounded-lg p-4 space-y-2">
-      <h3 className="text-sm font-medium text-muted-foreground mb-3">{title}</h3>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium text-muted-foreground">{title}</h3>
+        {action}
+      </div>
       {children}
     </div>
   );
@@ -337,5 +365,94 @@ function NetworkTooltip({ active, payload, label }: any) {
         </p>
       ))}
     </div>
+  );
+}
+
+const inputCls = "w-full bg-input border border-border rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring";
+
+function EditConfigDialog({
+  open, onOpenChange, instanceName, currentCpu, currentMem, onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  instanceName: string;
+  currentCpu: string;
+  currentMem: string;
+  onSaved: () => void;
+}) {
+  const [cpu, setCpu] = useState(currentCpu);
+  const [mem, setMem] = useState(currentMem);
+
+  // 每次打开时同步最新值
+  useEffect(() => {
+    if (open) { setCpu(currentCpu); setMem(currentMem); }
+  }, [open, currentCpu, currentMem]);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.instances.updateConfig(instanceName, {
+        "limits.cpu": cpu.trim(),
+        "limits.memory": mem.trim(),
+      }),
+    onSuccess: () => {
+      toast.success("配置已更新");
+      onSaved();
+      onOpenChange(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <Dialog.Title className="text-base font-semibold">编辑资源配置</Dialog.Title>
+            <Dialog.Close className="text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </Dialog.Close>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">CPU 限制</label>
+              <input
+                value={cpu}
+                onChange={(e) => setCpu(e.target.value)}
+                placeholder="留空表示不限制，例: 2"
+                className={inputCls}
+              />
+              <p className="text-xs text-muted-foreground">填写核数（如 <code>2</code>）或核心范围（如 <code>0-1</code>）</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">内存限制</label>
+              <input
+                value={mem}
+                onChange={(e) => setMem(e.target.value)}
+                placeholder="留空表示不限制，例: 512MB"
+                className={inputCls}
+              />
+              <p className="text-xs text-muted-foreground">支持 MB / GB 单位，如 <code>512MB</code>、<code>2GB</code></p>
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <Dialog.Close asChild>
+              <button className="flex-1 py-2 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground transition-colors">
+                取消
+              </button>
+            </Dialog.Close>
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+              className="flex-1 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {mutation.isPending ? "保存中..." : "保存"}
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

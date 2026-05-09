@@ -90,6 +90,45 @@ func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, inst)
 }
 
+// PatchInstanceConfig 合并更新实例配置（只修改传入的字段，其余保留）
+func (h *Handler) PatchInstanceConfig(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	inst, etag, err := h.client.Server().GetInstance(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	var patch struct {
+		Config      map[string]string `json:"config"`
+		Description string            `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+
+	put := inst.Writable()
+	if patch.Description != "" {
+		put.Description = patch.Description
+	}
+	for k, v := range patch.Config {
+		if v == "" {
+			delete(put.Config, k) // 空字符串表示删除该限制
+		} else {
+			put.Config[k] = v
+		}
+	}
+
+	op, err := h.client.Server().UpdateInstance(name, put, etag)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, op)
+}
+
 func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 	var req incusapi.InstancesPost
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
