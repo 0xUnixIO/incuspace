@@ -59,6 +59,24 @@ incus profile device add default eth0 nic nictype=bridged parent=incusbr0 name=e
 echo "Incus 安装完成"
 EOF
 
+# --- 2.5 在 VM 里安装 Postgres（多用户后端依赖）---
+info "检查 Postgres..."
+orb run -m "$MACHINE" -u root bash <<'EOF'
+if command -v psql &>/dev/null; then
+  echo "Postgres 已安装"
+else
+  echo "安装 Postgres..."
+  apt-get install -y postgresql
+  systemctl enable --now postgresql
+fi
+# 创建用户/库（幂等）
+sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='incuspace'" | grep -q 1 \
+  || sudo -u postgres psql -c "CREATE USER incuspace WITH PASSWORD 'incuspace';"
+sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='incuspace'" | grep -q 1 \
+  || sudo -u postgres psql -c "CREATE DATABASE incuspace OWNER incuspace;"
+echo "Postgres 就绪"
+EOF
+
 # --- 3. 在 macOS 交叉编译 Linux binary ---
 GOARCH_TARGET=$(orb run -m "$MACHINE" uname -m | tr -d '\r' | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 info "交叉编译后端 (linux/${GOARCH_TARGET})..."
@@ -89,6 +107,7 @@ systemd-run \
   --collect \
   --setenv=ADMIN_USER=admin \
   --setenv=ADMIN_PASS=admin \
+  --setenv=DATABASE_URL='postgres://incuspace:incuspace@127.0.0.1:5432/incuspace?sslmode=disable' \
   /tmp/incuspace --addr :8080
 
 sleep 1

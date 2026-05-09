@@ -1,17 +1,25 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/0xUnixIO/incuspace/internal/api"
+	"github.com/0xUnixIO/incuspace/internal/db"
+	"github.com/0xUnixIO/incuspace/internal/images"
 	"github.com/0xUnixIO/incuspace/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/instances"
+	"github.com/0xUnixIO/incuspace/internal/plans"
+	"github.com/0xUnixIO/incuspace/internal/quota"
 	"github.com/0xUnixIO/incuspace/internal/sshkeys"
 	"github.com/0xUnixIO/incuspace/internal/static"
+	"github.com/0xUnixIO/incuspace/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -25,13 +33,40 @@ func main() {
 
 	addr := flag.String("addr", ":8080", "监听地址")
 	socketPath := flag.String("socket", "/var/lib/incus/unix.socket", "Incus Unix socket 路径")
-	dataDir := flag.String("data-dir", defaultDataDir, "数据目录（用于存储 SSH 公钥等持久化数据）")
+	dataDir := flag.String("data-dir", defaultDataDir, "数据目录")
 	version := flag.Bool("version", false, "打印版本")
 	flag.Parse()
 
 	if *version {
 		log.Printf("incus-panel %s", Version)
 		return
+	}
+
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL 未设置（例: postgres://user:pass@localhost/incuspace?sslmode=disable）")
+	}
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, dsn)
+	if err != nil {
+		log.Fatalf("连接数据库失败: %v", err)
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		log.Fatalf("迁移失败: %v", err)
+	}
+
+	usersRepo := users.NewRepo(pool)
+	instsRepo := instances.NewRepo(pool, instances.PortPool{
+		Start:            envInt("PORT_POOL_START", 30000),
+		End:              envInt("PORT_POOL_END", 39999),
+		PortsPerInstance: envInt("PORTS_PER_INSTANCE", 10),
+	})
+	plansRepo := plans.NewRepo(pool)
+	allowedImagesRepo := images.NewRepo(pool)
+
+	if err := bootstrapAdmin(ctx, usersRepo); err != nil {
+		log.Fatalf("初始化管理员失败: %v", err)
 	}
 
 	client, err := incus.NewClient(*socketPath)
@@ -44,13 +79,16 @@ func main() {
 		log.Fatalf("初始化 SSH key 存储失败: %v", err)
 	}
 
+	quotaStore := quota.NewStore(pool)
+	go quota.NewMonitor(quotaStore, instsRepo, client).Run(ctx)
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 
-	api.Register(r, client, keyStore)
-
+	h := api.Register(r, client, keyStore, quotaStore, usersRepo, instsRepo, plansRepo, allowedImagesRepo)
+	go h.ReconcilePlanLimits(context.Background())
 	r.Handle("/*", spaHandler(getStaticFS()))
 
 	log.Printf("incus-panel %s @ %s", Version, *addr)
@@ -59,7 +97,35 @@ func main() {
 	}
 }
 
-// getStaticFS 优先使用 STATIC_DIR 环境变量（开发模式），否则使用嵌入的静态文件
+func bootstrapAdmin(ctx context.Context, repo *users.Repo) error {
+	n, err := repo.Count(ctx)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	user := os.Getenv("ADMIN_USER")
+	pass := os.Getenv("ADMIN_PASS")
+	if user == "" {
+		user = "admin"
+	}
+	if pass == "" {
+		pass = "admin"
+		log.Println("⚠️ ADMIN_PASS 未设置，已使用默认密码 admin（请尽快通过面板修改）")
+	}
+	u, err := repo.Create(ctx, users.CreateInput{
+		Username: user,
+		Password: pass,
+		Role:     users.RoleAdmin,
+	})
+	if err != nil {
+		return err
+	}
+	log.Printf("✅ 已创建初始管理员: %s (id=%s)", u.Username, u.ID)
+	return nil
+}
+
 func getStaticFS() http.FileSystem {
 	if p := os.Getenv("STATIC_DIR"); p != "" {
 		return http.Dir(p)
@@ -71,13 +137,11 @@ func getStaticFS() http.FileSystem {
 	return http.FS(sub)
 }
 
-// spaHandler 对未知路径 fallback 到 index.html，支持 React Router 客户端路由
 func spaHandler(fsys http.FileSystem) http.HandlerFunc {
 	fileServer := http.FileServer(fsys)
 	return func(w http.ResponseWriter, r *http.Request) {
 		f, err := fsys.Open(r.URL.Path)
 		if err != nil {
-			// 文件不存在，返回 index.html（SPA 路由处理）
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"
 			fileServer.ServeHTTP(w, r2)
@@ -86,4 +150,16 @@ func spaHandler(fsys http.FileSystem) http.HandlerFunc {
 		f.Close()
 		fileServer.ServeHTTP(w, r)
 	}
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }

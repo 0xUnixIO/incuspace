@@ -1,19 +1,25 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/0xUnixIO/incuspace/internal/auth"
+	"github.com/0xUnixIO/incuspace/internal/images"
 	"github.com/0xUnixIO/incuspace/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/instances"
+	"github.com/0xUnixIO/incuspace/internal/plans"
+	"github.com/0xUnixIO/incuspace/internal/quota"
 	"github.com/0xUnixIO/incuspace/internal/sshkeys"
+	"github.com/0xUnixIO/incuspace/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	incusclient "github.com/lxc/incus/v6/client"
@@ -21,15 +27,27 @@ import (
 )
 
 type Handler struct {
-	client   *incus.Client
-	keys     *sshkeys.Store
-	upgrader websocket.Upgrader
+	client        *incus.Client
+	keys          *sshkeys.Store
+	quotas        *quota.Store
+	users         *users.Repo
+	insts         *instances.Repo
+	plans         *plans.Repo
+	allowedImages *images.Repo
+	upgrader      websocket.Upgrader
 }
 
-func New(client *incus.Client, keys *sshkeys.Store) *Handler {
+func New(client *incus.Client, keys *sshkeys.Store, quotas *quota.Store,
+	usersRepo *users.Repo, instsRepo *instances.Repo,
+	plansRepo *plans.Repo, allowedImagesRepo *images.Repo) *Handler {
 	return &Handler{
-		client: client,
-		keys:   keys,
+		client:        client,
+		keys:          keys,
+		quotas:        quotas,
+		users:         usersRepo,
+		insts:         instsRepo,
+		plans:         plansRepo,
+		allowedImages: allowedImagesRepo,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -46,7 +64,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"message": msg})
 }
 
-// Login 用户名密码认证
+// Login 用户名密码认证（DB 比对）
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
@@ -56,33 +74,104 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	adminUser := os.Getenv("ADMIN_USER")
-	adminPass := os.Getenv("ADMIN_PASS")
-	if adminUser == "" {
-		adminUser = "admin"
-	}
-	if adminPass == "" {
-		adminPass = "admin"
-	}
-	if req.Username != adminUser || req.Password != adminPass {
+	u, err := h.users.Verify(r.Context(), req.Username, req.Password)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
-	token, err := auth.GenerateToken(req.Username)
+	token, err := auth.GenerateToken(u.ID, u.Username, u.Role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "token 生成失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": token,
+		"user":  u,
+	})
+}
+
+// Me 返回当前登录用户
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+	c := auth.FromContext(r.Context())
+	if c == nil {
+		writeError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	u, err := h.users.Get(r.Context(), c.UserID)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "用户不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
 }
 
 func (h *Handler) ListInstances(w http.ResponseWriter, r *http.Request) {
-	instances, err := h.client.Server().GetInstances(incusapi.InstanceTypeAny)
+	c := auth.FromContext(r.Context())
+	if c == nil {
+		writeError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	all, err := h.client.Server().GetInstances(incusapi.InstanceTypeAny)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, instances)
+	incusByName := make(map[string]incusapi.Instance, len(all))
+	for _, inst := range all {
+		incusByName[inst.Name] = inst
+	}
+
+	// 以 DB 登记为准，缺失 Incus 数据时合成一个 status=Creating 的占位行，
+	// 这样新建实例后即使 Incus 还没拉完镜像，列表也会立即出现。
+	var owned []instances.Instance
+	if auth.IsAdmin(c) {
+		owned, err = h.insts.ListAll(r.Context())
+	} else {
+		owned, err = h.insts.ListByOwner(r.Context(), c.UserID)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 包装为带 panel 元数据的结构
+	type instanceWithMeta struct {
+		incusapi.Instance
+		PortRangeStart int `json:"port_range_start,omitempty"`
+		PortRangeEnd   int `json:"port_range_end,omitempty"`
+	}
+	out := make([]instanceWithMeta, 0, len(owned))
+	known := make(map[string]struct{}, len(owned))
+	for _, o := range owned {
+		known[o.Name] = struct{}{}
+		var inst incusapi.Instance
+		if existing, ok := incusByName[o.Name]; ok {
+			inst = existing
+		} else {
+			inst = incusapi.Instance{
+				InstancePut: incusapi.InstancePut{},
+				Name:        o.Name,
+				Status:      "Creating",
+				StatusCode:  incusapi.Pending,
+				Type:        "container",
+				CreatedAt:   o.CreatedAt,
+			}
+		}
+		out = append(out, instanceWithMeta{
+			Instance:       inst,
+			PortRangeStart: o.PortRangeStart,
+			PortRangeEnd:   o.PortRangeEnd,
+		})
+	}
+	// admin 还要附加：Incus 中存在但 DB 没登记的（如手动用 incus 命令创建的实例）
+	if auth.IsAdmin(c) {
+		for _, inst := range all {
+			if _, ok := known[inst.Name]; !ok {
+				out = append(out, instanceWithMeta{Instance: inst})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +182,34 @@ func (h *Handler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, inst)
+}
+
+// GetInstancePanelInfo 返回面板登记的实例元数据（含端口范围、owner 等）+ 套餐快照
+func (h *Handler) GetInstancePanelInfo(w http.ResponseWriter, r *http.Request) {
+	inst := instanceFromCtx(r.Context())
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "实例未在面板登记")
+		return
+	}
+	resp := map[string]any{
+		"id":               inst.ID,
+		"name":             inst.Name,
+		"display_name":     inst.DisplayName,
+		"owner_id":         inst.OwnerID,
+		"spec_cpu":         inst.SpecCPU,
+		"spec_memory_mb":   inst.SpecMemoryMB,
+		"port_range_start": inst.PortRangeStart,
+		"port_range_end":   inst.PortRangeEnd,
+		"plan_id":          inst.PlanID,
+		"image":            inst.Image,
+		"created_at":       inst.CreatedAt,
+	}
+	if inst.PlanID != nil && h.plans != nil {
+		if p, err := h.plans.Get(r.Context(), *inst.PlanID); err == nil {
+			resp["plan"] = p
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // PatchInstanceConfig 合并更新实例配置（只修改传入的字段，其余保留）
@@ -135,20 +252,91 @@ func (h *Handler) PatchInstanceConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
+	c := auth.FromContext(r.Context())
+	if c == nil {
+		writeError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	if _, err := h.users.Get(r.Context(), c.UserID); err != nil {
+		writeError(w, http.StatusUnauthorized, "用户不存在，请重新登录")
+		return
+	}
 	var body struct {
-		incusapi.InstancesPost
-		SSHKeyIDs []string `json:"ssh_key_ids"`
+		DisplayName string   `json:"display_name"`
+		Name        string   `json:"name"` // 兼容旧字段；优先用 display_name
+		PlanID      string   `json:"plan_id"`
+		Image       string   `json:"image"` // alias
+		SSHKeyIDs   []string `json:"ssh_key_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	req := body.InstancesPost
+	displayName := body.DisplayName
+	if displayName == "" {
+		displayName = body.Name
+	}
+	if displayName == "" {
+		writeError(w, http.StatusBadRequest, "实例名必填")
+		return
+	}
+	if body.PlanID == "" {
+		writeError(w, http.StatusBadRequest, "plan_id 必填")
+		return
+	}
+	if body.Image == "" {
+		writeError(w, http.StatusBadRequest, "image 必填")
+		return
+	}
+	planID, err := auth.ParseIDParam(body.PlanID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "plan_id 无效")
+		return
+	}
+	plan, err := h.plans.Get(r.Context(), planID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "套餐不存在")
+		return
+	}
+	if !plan.Enabled {
+		writeError(w, http.StatusBadRequest, "套餐已下架")
+		return
+	}
+	if plan.Stock != nil && plan.Sold >= *plan.Stock {
+		writeError(w, http.StatusConflict, "套餐已售罄")
+		return
+	}
+	img, err := h.allowedImages.GetByAlias(r.Context(), body.Image)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "镜像不在允许列表")
+		return
+	}
+
+	actualName := displayName
+	if !auth.IsAdmin(c) {
+		actualName = instances.PrefixedName(c.UserID, displayName)
+	}
+
+	// 构造 Incus 创建请求
+	req := incusapi.InstancesPost{
+		Name: actualName,
+		Source: incusapi.InstanceSource{
+			Type:     "image",
+			Server:   "https://images.linuxcontainers.org",
+			Protocol: "simplestreams",
+			Alias:    img.Source,
+		},
+		InstancePut: incusapi.InstancePut{
+			Config: map[string]string{
+				"limits.cpu":    fmt.Sprintf("%d", plan.CPU),
+				"limits.memory": fmt.Sprintf("%dMiB", plan.MemoryMB),
+			},
+		},
+	}
+	// 如果 source 看起来是完整的 server 形式（包含 ":"），更细的解析以后再加；MVP 默认用 linuxcontainers
+
 	if len(body.SSHKeyIDs) > 0 && h.keys != nil {
 		if selected := h.keys.GetByIDs(body.SSHKeyIDs); len(selected) > 0 {
-			if req.Config == nil {
-				req.Config = make(map[string]string)
-			}
 			var sb strings.Builder
 			sb.WriteString("#cloud-config\nssh_authorized_keys:\n")
 			for _, k := range selected {
@@ -159,12 +347,153 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 			req.Config["user.user-data"] = sb.String()
 		}
 	}
+
 	op, err := h.client.Server().CreateInstance(req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	createdInst, err := h.insts.Create(r.Context(), instances.CreateInput{
+		OwnerID:     c.UserID,
+		DisplayName: displayName,
+		Name:        actualName,
+		CPU:         plan.CPU,
+		MemoryMB:    plan.MemoryMB,
+		Ports:       plan.Ports,
+		PlanID:      &plan.ID,
+		PlanStock:   plan.Stock,
+		Image:       img.Alias,
+	})
+	if err != nil {
+		_, _ = h.client.Server().DeleteInstance(actualName)
+		writeError(w, http.StatusInternalServerError, "登记实例失败: "+err.Error())
+		return
+	}
+
+	// 同步：套餐流量配额写入 DB（不依赖 Incus 实例存在）
+	if h.quotas != nil && plan.TrafficGB > 0 {
+		_ = h.quotas.Set(r.Context(), quota.Quota{
+			InstanceID: createdInst.ID,
+			LimitBytes: int64(plan.TrafficGB) * 1024 * 1024 * 1024,
+			Period:     "monthly",
+			Action:     "stop",
+		})
+	}
+
+	// 异步：等 Incus 创建完成后应用带宽限速到主网卡 + 自动启动 + 默认 SSH proxy
+	if plan.BandwidthMbps > 0 || plan.AutoStart {
+		go h.applyBandwidthFromPlan(actualName, plan.BandwidthMbps, plan.AutoStart, createdInst.PortRangeStart, op)
+	}
+
 	writeJSON(w, http.StatusAccepted, op)
+}
+
+// applyBandwidthFromPlan 等 Incus 创建 op 完成后给主网卡设置 limits.ingress/egress；
+// autoStart=true 时再启动实例并加默认 SSH proxy（host:sshHostPort → guest:22）。
+func (h *Handler) applyBandwidthFromPlan(instanceName string, mbps int, autoStart bool, sshHostPort int, op incusclient.Operation) {
+	if op != nil {
+		if err := op.Wait(); err != nil {
+			log.Printf("applyBandwidthFromPlan %s: op.Wait failed: %v", instanceName, err)
+			return
+		}
+	}
+	inst, etag, err := h.client.Server().GetInstance(instanceName)
+	if err != nil {
+		log.Printf("applyBandwidthFromPlan %s: GetInstance failed: %v", instanceName, err)
+		return
+	}
+	nic := pickPrimaryNic(inst.ExpandedDevices)
+	put := inst.Writable()
+	if put.Devices == nil {
+		put.Devices = make(map[string]map[string]string)
+	}
+	if mbps > 0 && nic != "" {
+		dev := put.Devices[nic]
+		if dev == nil {
+			dev = make(map[string]string)
+			for k, v := range inst.ExpandedDevices[nic] {
+				dev[k] = v
+			}
+		}
+		limit := fmt.Sprintf("%dMbit", mbps)
+		dev["limits.ingress"] = limit
+		dev["limits.egress"] = limit
+		put.Devices[nic] = dev
+	}
+	// 默认 SSH proxy 设备：host:sshHostPort → guest:22
+	if autoStart && sshHostPort > 0 {
+		devName := fmt.Sprintf("proxy-%d", sshHostPort)
+		if _, exists := put.Devices[devName]; !exists {
+			put.Devices[devName] = map[string]string{
+				"type":    "proxy",
+				"listen":  fmt.Sprintf("tcp:0.0.0.0:%d", sshHostPort),
+				"connect": "tcp:127.0.0.1:22",
+			}
+		}
+	}
+	if _, err := h.client.Server().UpdateInstance(instanceName, put, etag); err != nil {
+		log.Printf("applyBandwidthFromPlan %s: UpdateInstance failed: %v", instanceName, err)
+		return
+	}
+	log.Printf("applyBandwidthFromPlan %s: bandwidth=%dMbit sshPort=%d", instanceName, mbps, sshHostPort)
+
+	if !autoStart {
+		return
+	}
+	// 创建完成后自动启动
+	startReq := incusapi.InstanceStatePut{Action: "start", Timeout: -1}
+	startOp, err := h.client.Server().UpdateInstanceState(instanceName, startReq, "")
+	if err != nil {
+		log.Printf("autostart %s: UpdateInstanceState failed: %v", instanceName, err)
+		return
+	}
+	if err := startOp.Wait(); err != nil {
+		log.Printf("autostart %s: op.Wait failed: %v", instanceName, err)
+		return
+	}
+	log.Printf("autostart %s: started", instanceName)
+}
+
+// ReconcilePlanLimits 启动时扫描 DB 中所有 plan_id != NULL 的实例，
+// 若 Incus 实例存在但缺 limits.ingress/egress，则重新下发。
+// 用于修复部署中断 / 老数据。
+func (h *Handler) ReconcilePlanLimits(ctx context.Context) {
+	log.Printf("reconcile: start")
+	owned, err := h.insts.ListAll(ctx)
+	if err != nil {
+		log.Printf("reconcile: ListAll failed: %v", err)
+		return
+	}
+	log.Printf("reconcile: scanning %d instances", len(owned))
+	count := 0
+	for _, o := range owned {
+		if o.PlanID == nil {
+			continue
+		}
+		plan, err := h.plans.Get(ctx, *o.PlanID)
+		if err != nil || plan == nil {
+			log.Printf("reconcile: %s plan lookup failed: %v", o.Name, err)
+			continue
+		}
+		inst, _, err := h.client.Server().GetInstance(o.Name)
+		if err != nil {
+			log.Printf("reconcile: %s GetInstance failed: %v", o.Name, err)
+			continue
+		}
+		nic := pickPrimaryNic(inst.ExpandedDevices)
+		if nic == "" {
+			log.Printf("reconcile: %s no nic", o.Name)
+			continue
+		}
+		cur := inst.ExpandedDevices[nic]
+		if cur["limits.ingress"] != "" && cur["limits.egress"] != "" {
+			continue
+		}
+		log.Printf("reconcile: %s missing bandwidth, applying %dMbit", o.Name, plan.BandwidthMbps)
+		count++
+		go h.applyBandwidthFromPlan(o.Name, plan.BandwidthMbps, false, 0, nil)
+	}
+	log.Printf("reconcile: triggered %d apply tasks", count)
 }
 
 func (h *Handler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +503,39 @@ func (h *Handler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// DB 登记删除（best-effort，cascade 会带掉 quota）
+	_ = h.insts.DeleteByName(r.Context(), name)
 	writeJSON(w, http.StatusAccepted, op)
+}
+
+// parseMemoryMB 解析 incus limits.memory 字符串为 MB（粗略）
+func parseMemoryMB(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	// 支持后缀 KB/MB/GB/TB（二进制视为相同）
+	var mult int = 1
+	upper := strings.ToUpper(s)
+	switch {
+	case strings.HasSuffix(upper, "TB") || strings.HasSuffix(upper, "TIB"):
+		mult = 1024 * 1024
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "GB") || strings.HasSuffix(upper, "GIB"):
+		mult = 1024
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "MB") || strings.HasSuffix(upper, "MIB"):
+		mult = 1
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "KB") || strings.HasSuffix(upper, "KIB"):
+		// 不足 1MB 记 0
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n * mult
 }
 
 func (h *Handler) InstanceAction(w http.ResponseWriter, r *http.Request) {
@@ -316,8 +677,8 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 		Environment: map[string]string{"TERM": "xterm-256color"},
 		Interactive: true,
 		WaitForWS:   true,
-		Width:        cols,
-		Height:       rows,
+		Width:       cols,
+		Height:      rows,
 	}, execArgs)
 	if err != nil {
 		browserConn.WriteMessage(websocket.TextMessage, []byte(`{"error":"`+err.Error()+`"}`))

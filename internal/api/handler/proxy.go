@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/0xUnixIO/incuspace/internal/auth"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -75,6 +76,21 @@ func (h *Handler) AddProxyRule(w http.ResponseWriter, r *http.Request) {
 	if req.HostPort <= 0 || req.HostPort > 65535 || req.ContainerPort <= 0 || req.ContainerPort > 65535 {
 		writeError(w, http.StatusBadRequest, "端口范围无效")
 		return
+	}
+
+	// 端口范围校验：admin 跳过；普通用户必须落在该 *实例* 自己的 port range 内
+	c := auth.FromContext(r.Context())
+	if c != nil && !auth.IsAdmin(c) {
+		inst := instanceFromCtx(r.Context())
+		if inst == nil {
+			writeError(w, http.StatusInternalServerError, "实例上下文缺失")
+			return
+		}
+		if inst.PortRangeStart == 0 || req.HostPort < inst.PortRangeStart || req.HostPort > inst.PortRangeEnd {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("host_port=%d 不在该实例的端口范围 %d-%d 内", req.HostPort, inst.PortRangeStart, inst.PortRangeEnd))
+			return
+		}
 	}
 
 	inst, etag, err := h.client.Server().GetInstance(name)
