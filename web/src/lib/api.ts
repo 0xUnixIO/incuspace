@@ -29,6 +29,12 @@ export const api = {
         body: JSON.stringify({ username, password }),
       }),
   },
+  sshKeys: {
+    list: () => request<SSHKey[]>("/ssh-keys"),
+    add: (name: string, public_key: string) =>
+      request<SSHKey>("/ssh-keys", { method: "POST", body: JSON.stringify({ name, public_key }) }),
+    delete: (id: string) => request<void>(`/ssh-keys/${id}`, { method: "DELETE" }),
+  },
   instances: {
     list: () => request<Instance[]>("/instances"),
     get: (name: string) => request<Instance>(`/instances/${name}`),
@@ -58,6 +64,14 @@ export const api = {
         request<Operation>(`/instances/${name}/snapshots/${snap}`, { method: "DELETE" }),
       restore: (name: string, snap: string) =>
         request<Operation>(`/instances/${name}/snapshots/${snap}/restore`, { method: "POST" }),
+    },
+    sshKeys: {
+      get: (name: string) => request<string[]>(`/instances/${name}/ssh-keys`),
+      set: (name: string, keyIds: string[]) =>
+        request<{ status: string }>(`/instances/${name}/ssh-keys`, {
+          method: "PUT",
+          body: JSON.stringify({ key_ids: keyIds }),
+        }),
     },
   },
   images: {
@@ -171,6 +185,14 @@ export interface CreateInstanceRequest {
   source: { type: string; alias?: string; server?: string; protocol?: string };
   profiles?: string[];
   config?: Record<string, string>;
+  ssh_key_ids?: string[];
+}
+
+export interface SSHKey {
+  id: string;
+  name: string;
+  public_key: string;
+  created_at: string;
 }
 
 export interface Operation {

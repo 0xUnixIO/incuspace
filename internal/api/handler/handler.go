@@ -13,6 +13,7 @@ import (
 
 	"github.com/0xUnixIO/incuspace/internal/auth"
 	"github.com/0xUnixIO/incuspace/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/sshkeys"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	incusclient "github.com/lxc/incus/v6/client"
@@ -21,12 +22,14 @@ import (
 
 type Handler struct {
 	client   *incus.Client
+	keys     *sshkeys.Store
 	upgrader websocket.Upgrader
 }
 
-func New(client *incus.Client) *Handler {
+func New(client *incus.Client, keys *sshkeys.Store) *Handler {
 	return &Handler{
 		client: client,
+		keys:   keys,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -132,10 +135,29 @@ func (h *Handler) PatchInstanceConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
-	var req incusapi.InstancesPost
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var body struct {
+		incusapi.InstancesPost
+		SSHKeyIDs []string `json:"ssh_key_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
+	}
+	req := body.InstancesPost
+	if len(body.SSHKeyIDs) > 0 && h.keys != nil {
+		if selected := h.keys.GetByIDs(body.SSHKeyIDs); len(selected) > 0 {
+			if req.Config == nil {
+				req.Config = make(map[string]string)
+			}
+			var sb strings.Builder
+			sb.WriteString("#cloud-config\nssh_authorized_keys:\n")
+			for _, k := range selected {
+				sb.WriteString("  - ")
+				sb.WriteString(strings.TrimSpace(k.PublicKey))
+				sb.WriteString("\n")
+			}
+			req.Config["user.user-data"] = sb.String()
+		}
 	}
 	op, err := h.client.Server().CreateInstance(req)
 	if err != nil {

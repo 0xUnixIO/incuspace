@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import * as Dialog from "@radix-ui/react-dialog";
 import { api, type Instance, type InstanceAction, type CreateInstanceRequest, type IncusOperation } from "../lib/api";
-import { Play, Square, RotateCw, Trash2, Plus, Terminal, X, Loader2 } from "lucide-react";
+import { Play, Square, RotateCw, Trash2, Plus, Terminal, X, Loader2, KeyRound } from "lucide-react";
 import { cn } from "../lib/utils";
 
 const statusColor: Record<string, string> = {
@@ -165,6 +165,12 @@ function CreateInstanceDialog({
   const [error, setError] = useState("");
 
   const [submitted, setSubmitted] = useState(false);
+  const [selectedKeyIDs, setSelectedKeyIDs] = useState<string[]>([]);
+
+  const { data: sshKeys = [] } = useQuery({
+    queryKey: ["ssh-keys"],
+    queryFn: api.sshKeys.list,
+  });
 
   const createMutation = useMutation({
     mutationFn: (req: CreateInstanceRequest) => api.instances.create(req),
@@ -200,6 +206,7 @@ function CreateInstanceDialog({
         protocol: "simplestreams",
       },
       config: Object.keys(config).length ? config : undefined,
+      ssh_key_ids: selectedKeyIDs.length ? selectedKeyIDs : undefined,
     });
   }
 
@@ -213,6 +220,7 @@ function CreateInstanceDialog({
       setMemLimit("");
       setError("");
       setSubmitted(false);
+      setSelectedKeyIDs([]);
       onOpenChange(v);
     }
   }
@@ -329,6 +337,42 @@ function CreateInstanceDialog({
                 />
               </Field>
             </div>
+
+            {/* SSH 公钥注入（可选）*/}
+            {sshKeys.length > 0 && (
+              <Field label="注入 SSH 公钥（可选）">
+                <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                  {sshKeys.map((k) => {
+                    const checked = selectedKeyIDs.includes(k.id);
+                    return (
+                      <label
+                        key={k.id}
+                        className={cn(
+                          "flex items-center gap-2.5 px-3 py-2 rounded-md border cursor-pointer transition-colors text-sm",
+                          checked
+                            ? "border-primary/50 bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-primary"
+                          checked={checked}
+                          onChange={() =>
+                            setSelectedKeyIDs((prev) =>
+                              checked ? prev.filter((id) => id !== k.id) : [...prev, k.id]
+                            )
+                          }
+                        />
+                        <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{k.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">需镜像支持 cloud-init</p>
+              </Field>
+            )}
 
             {error && (
               <p className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded px-3 py-2">

@@ -4,11 +4,12 @@ import (
 	"github.com/0xUnixIO/incuspace/internal/api/handler"
 	"github.com/0xUnixIO/incuspace/internal/auth"
 	"github.com/0xUnixIO/incuspace/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/sshkeys"
 	"github.com/go-chi/chi/v5"
 )
 
-func Register(r chi.Router, client *incus.Client) {
-	h := handler.New(client)
+func Register(r chi.Router, client *incus.Client, keys *sshkeys.Store) {
+	h := handler.New(client, keys)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// 公开路由
@@ -58,6 +59,15 @@ func Register(r chi.Router, client *incus.Client) {
 			r.Get("/instances/{name}/files/download", h.DownloadInstanceFile)
 			r.Post("/instances/{name}/files", h.UploadInstanceFile)
 			r.Delete("/instances/{name}/files", h.DeleteInstanceFile)
+
+			// SSH 公钥管理（面板全局）
+			r.Get("/ssh-keys", h.ListSSHKeys)
+			r.Post("/ssh-keys", h.AddSSHKey)
+			r.Delete("/ssh-keys/{id}", h.DeleteSSHKey)
+
+			// 实例 SSH 公钥（直接读写 authorized_keys）
+			r.Get("/instances/{name}/ssh-keys", h.GetInstanceSSHKeys)
+			r.Put("/instances/{name}/ssh-keys", h.PutInstanceSSHKeys)
 		})
 	})
 }

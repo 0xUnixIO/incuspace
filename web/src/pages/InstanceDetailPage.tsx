@@ -6,9 +6,10 @@ import {
 } from "recharts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { api, type InstanceState, type Snapshot } from "../lib/api";
+import { api, type InstanceState, type Snapshot, type SSHKey } from "../lib/api";
 import { formatBytes, formatPercent } from "../lib/utils";
-import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw } from "lucide-react";
+import { cn } from "../lib/utils";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw, KeyRound, Check } from "lucide-react";
 
 const MAX_POINTS = 60;
 const INTERVAL_MS = 2000;
@@ -304,6 +305,9 @@ export default function InstanceDetailPage() {
         </ChartCard>
       </div>
 
+      {/* SSH 公钥 */}
+      <InstanceSSHKeys instanceName={name!} />
+
       {/* 快照区域 */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
@@ -478,6 +482,111 @@ function NetworkTooltip({ active, payload, label }: any) {
 }
 
 const inputCls = "w-full bg-input border border-border rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring";
+
+function InstanceSSHKeys({ instanceName }: { instanceName: string }) {
+  const qc = useQueryClient();
+
+  const { data: storeKeys = [] } = useQuery<SSHKey[]>({
+    queryKey: ["ssh-keys"],
+    queryFn: api.sshKeys.list,
+  });
+
+  const { data: instanceKeyLines = [], isLoading } = useQuery<string[]>({
+    queryKey: ["instance-ssh-keys", instanceName],
+    queryFn: () => api.instances.sshKeys.get(instanceName),
+  });
+
+  // 面板 key 是否已在实例中（按公钥内容比对）
+  function isApplied(key: SSHKey) {
+    return instanceKeyLines.some((line) => line.trim() === key.public_key.trim());
+  }
+
+  const [selected, setSelected] = useState<string[]>([]);
+  const [initialized, setInitialized] = useState(false);
+
+  // 初始化勾选状态：把当前 instance 中已有的面板 key 勾上
+  useEffect(() => {
+    if (!initialized && storeKeys.length > 0 && !isLoading) {
+      setSelected(storeKeys.filter(isApplied).map((k) => k.id));
+      setInitialized(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeKeys, instanceKeyLines, isLoading]);
+
+  const applyMutation = useMutation({
+    mutationFn: () => api.instances.sshKeys.set(instanceName, selected),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["instance-ssh-keys", instanceName] });
+      toast.success("SSH 公钥已更新");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+        <div className="flex items-center gap-2">
+          <KeyRound className="w-4 h-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">SSH 公钥</h3>
+        </div>
+        <button
+          onClick={() => applyMutation.mutate()}
+          disabled={applyMutation.isPending}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+        >
+          <Check className="w-3.5 h-3.5" />
+          {applyMutation.isPending ? "应用中..." : "应用"}
+        </button>
+      </div>
+
+      {storeKeys.length === 0 ? (
+        <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+          面板中还没有 SSH 公钥，请先到「SSH 公钥」页面添加
+        </div>
+      ) : (
+        <div className="divide-y divide-border">
+          {storeKeys.map((key) => {
+            const checked = selected.includes(key.id);
+            const applied = isApplied(key);
+            return (
+              <label
+                key={key.id}
+                className={cn(
+                  "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors hover:bg-accent/20",
+                  checked && "bg-primary/5"
+                )}
+              >
+                <input
+                  type="checkbox"
+                  className="accent-primary"
+                  checked={checked}
+                  onChange={() =>
+                    setSelected((prev) =>
+                      checked ? prev.filter((id) => id !== key.id) : [...prev, key.id]
+                    )
+                  }
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium">{key.name}</span>
+                    {applied && (
+                      <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/20 px-1.5 py-0.5 rounded">
+                        已在实例中
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-mono text-xs text-muted-foreground truncate mt-0.5">
+                    {key.public_key.slice(0, 60)}…
+                  </div>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function EditConfigDialog({
   open, onOpenChange, instanceName, currentCpu, currentMem, onSaved,

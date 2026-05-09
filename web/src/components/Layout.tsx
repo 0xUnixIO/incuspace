@@ -1,11 +1,12 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { Server, Image, Network, Database, LogOut, Activity } from "lucide-react";
+import { Server, Image, Network, Database, LogOut, Activity, KeyRound } from "lucide-react";
 
 const nav = [
   { to: "/instances", icon: Server, label: "实例" },
   { to: "/images", icon: Image, label: "镜像" },
   { to: "/networks", icon: Network, label: "网络" },
   { to: "/storage", icon: Database, label: "存储" },
+  { to: "/ssh-keys", icon: KeyRound, label: "SSH 公钥" },
 ];
 
 export default function Layout() {
