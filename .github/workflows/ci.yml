@@ -17,11 +17,11 @@ jobs:
           bun-version: latest
 
       - name: Build frontend
-        run: cd web && bun install --frozen-lockfile && bun run build
+        run: cd web && bun install && bun run build
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 'stable'
           cache: true
 
       - name: Build & vet

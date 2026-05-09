@@ -19,17 +19,18 @@ jobs:
           bun-version: latest
 
       - name: Build frontend
-        run: cd web && bun install --frozen-lockfile && bun run build
+        run: cd web && bun install && bun run build
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 'stable'
           cache: true
 
       - name: Build binaries
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p release
-          VERSION=${{ github.ref_name }}
           LDFLAGS="-s -w -X main.Version=${VERSION}"
 
           GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" \
@@ -42,7 +43,6 @@ jobs:
         run: |
           cd release
           sha256sum incuspace-linux-amd64 incuspace-linux-arm64 > sha256sums.txt
-          cat sha256sums.txt
 
       - name: Copy install script
         run: cp scripts/install.sh release/install.sh
