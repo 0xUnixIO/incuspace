@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import * as Dialog from "@radix-ui/react-dialog";
 import { api, type Image, type IncusOperation } from "../lib/api";
-import { Trash2, Download, X, Loader2 } from "lucide-react";
+import { Trash2, Download, X, Loader2, Search } from "lucide-react";
 import { formatBytes } from "../lib/utils";
 
 const SERVERS = [
@@ -144,45 +144,89 @@ function PullImageDialog({
   onOpenChange: (v: boolean) => void;
   onSuccess: () => void;
 }) {
-  const [alias, setAlias] = useState("");
   const [server, setServer] = useState(SERVERS[0].value);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState("");
+  const [dropOpen, setDropOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
 
-  const pullMutation = useMutation({
-    mutationFn: () => api.images.pull(alias.trim(), server),
-    onSuccess: () => {
-      setSubmitted(true);
-      onSuccess();
-    },
-    onError: (e: Error) => {
-      setError(e.message);
-      toast.error("拉取失败: " + e.message);
-    },
+  const { data: remoteImages = [], isFetching } = useQuery({
+    queryKey: ["remoteImages", server],
+    queryFn: () => api.images.listRemote(server),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
   });
 
-  function handleOpenChange(v: boolean) {
-    if (!pullMutation.isPending) {
-      setAlias("");
-      setServer(SERVERS[0].value);
-      setSubmitted(false);
-      setError("");
-      onOpenChange(v);
+  // 展平所有 alias，每条 alias 一行
+  const allAliases = useMemo(() => {
+    const rows: { alias: string; os: string; arch: string; type: string }[] = [];
+    for (const img of remoteImages) {
+      for (const a of img.aliases) {
+        rows.push({
+          alias: a.name,
+          os: img.properties?.os ?? "",
+          arch: img.architecture,
+          type: img.type,
+        });
+      }
     }
+    return rows;
+  }, [remoteImages]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    if (!q) return allAliases.slice(0, 100);
+    return allAliases.filter((r) => r.alias.toLowerCase().includes(q)).slice(0, 100);
+  }, [allAliases, search]);
+
+  // 点击外部关闭下拉
+  useEffect(() => {
+    function handle(e: MouseEvent) {
+      if (dropRef.current && !dropRef.current.contains(e.target as Node) &&
+          inputRef.current && !inputRef.current.contains(e.target as Node)) {
+        setDropOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, []);
+
+  const pullMutation = useMutation({
+    mutationFn: () => api.images.pull(selected || search.trim(), server),
+    onSuccess: () => { setSubmitted(true); onSuccess(); },
+    onError: (e: Error) => { setError(e.message); toast.error("拉取失败: " + e.message); },
+  });
+
+  function reset() {
+    setSearch(""); setSelected(""); setDropOpen(false);
+    setServer(SERVERS[0].value); setSubmitted(false); setError("");
+  }
+
+  function handleOpenChange(v: boolean) {
+    if (!pullMutation.isPending) { reset(); onOpenChange(v); }
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (!alias.trim()) return setError("请输入镜像别名");
+    if (!selected && !search.trim()) return setError("请选择或输入镜像别名");
     pullMutation.mutate();
+  }
+
+  function pick(alias: string) {
+    setSelected(alias);
+    setSearch(alias);
+    setDropOpen(false);
   }
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-md bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
           <div className="flex items-center justify-between">
             <Dialog.Title className="text-base font-semibold">拉取镜像</Dialog.Title>
             <Dialog.Close className="text-muted-foreground hover:text-foreground transition-colors">
@@ -199,61 +243,74 @@ function PullImageDialog({
                   <p className="text-muted-foreground">下载进行中，完成后镜像列表将自动刷新。</p>
                 </div>
               </div>
-              <button
-                onClick={() => handleOpenChange(false)}
-                className="w-full py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-              >
+              <button onClick={() => handleOpenChange(false)}
+                className="w-full py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
                 知道了
               </button>
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-1.5">
-                <label className="text-sm text-muted-foreground">镜像别名</label>
-                <input
-                  value={alias}
-                  onChange={(e) => setAlias(e.target.value)}
-                  placeholder="例: ubuntu/24.04"
-                  className={inputCls}
-                  autoFocus
-                />
-              </div>
-
-              <div className="space-y-1.5">
                 <label className="text-sm text-muted-foreground">镜像服务器</label>
-                <select
-                  value={server}
-                  onChange={(e) => setServer(e.target.value)}
-                  className={inputCls}
-                >
-                  {SERVERS.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
+                <select value={server} onChange={(e) => { setServer(e.target.value); setSearch(""); setSelected(""); }}
+                  className={inputCls}>
+                  {SERVERS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>
               </div>
 
-              {error && (
-                <p className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded px-3 py-2">
-                  {error}
+              <div className="space-y-1.5">
+                <label className="text-sm text-muted-foreground">镜像别名</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                  <input
+                    ref={inputRef}
+                    value={search}
+                    onChange={(e) => { setSearch(e.target.value); setSelected(""); setDropOpen(true); }}
+                    onFocus={() => setDropOpen(true)}
+                    placeholder={isFetching ? "加载镜像列表..." : "搜索，例: ubuntu/24.04"}
+                    className={`${inputCls} pl-8`}
+                    autoComplete="off"
+                    autoFocus
+                  />
+                  {isFetching && (
+                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground animate-spin" />
+                  )}
+
+                  {dropOpen && filtered.length > 0 && (
+                    <div ref={dropRef}
+                      className="absolute z-10 mt-1 w-full bg-card border border-border rounded-md shadow-lg max-h-52 overflow-y-auto">
+                      {filtered.map((r) => (
+                        <button
+                          key={r.alias}
+                          type="button"
+                          onMouseDown={() => pick(r.alias)}
+                          className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/50 text-left transition-colors ${selected === r.alias ? "bg-primary/10 text-primary" : ""}`}
+                        >
+                          <span className="font-mono truncate">{r.alias}</span>
+                          <span className="text-xs text-muted-foreground ml-2 shrink-0">{r.arch} · {r.type}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {allAliases.length > 0 ? `共 ${allAliases.length} 个可用别名` : isFetching ? "正在获取镜像列表..." : ""}
                 </p>
+              </div>
+
+              {error && (
+                <p className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded px-3 py-2">{error}</p>
               )}
 
               <div className="flex gap-2 pt-1">
                 <Dialog.Close asChild>
-                  <button
-                    type="button"
-                    className="flex-1 py-2 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground transition-colors"
-                  >
+                  <button type="button"
+                    className="flex-1 py-2 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground transition-colors">
                     取消
                   </button>
                 </Dialog.Close>
-                <button
-                  type="submit"
-                  disabled={pullMutation.isPending}
-                  className="flex-1 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
-                >
+                <button type="submit" disabled={pullMutation.isPending}
+                  className="flex-1 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors">
                   {pullMutation.isPending ? "提交中..." : "拉取"}
                 </button>
               </div>

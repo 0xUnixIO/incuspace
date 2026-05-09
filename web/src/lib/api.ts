@@ -62,6 +62,8 @@ export const api = {
   },
   images: {
     list: () => request<Image[]>("/images"),
+    listRemote: (server = "https://images.linuxcontainers.org") =>
+      request<Image[]>(`/images/remote?server=${encodeURIComponent(server)}`),
     delete: (fingerprint: string) =>
       request<void>(`/images/${fingerprint}`, { method: "DELETE" }),
     pull: (alias: string, server = "https://images.linuxcontainers.org") =>
@@ -152,6 +154,7 @@ export interface Image {
   size: number;
   created_at: string;
   type: string;
+  properties?: { os?: string; release?: string; description?: string; [k: string]: string | undefined };
 }
 
 export interface Network {
