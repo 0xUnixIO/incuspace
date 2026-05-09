@@ -162,7 +162,7 @@ install_panel
 
 # --- 打印结果 ---
 LOCAL_IP=$(hostname -I | awk '{print $1}')
-ADMIN_PASS=$(grep ADMIN_PASS "$PANEL_DIR/.env" | cut -d= -f2)
+ADMIN_PASS=$(grep ADMIN_PASS "$PANEL_DIR/.env" | cut -d= -f2-)
 
 echo ""
 echo "============================================"
