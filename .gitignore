@@ -1,0 +1,26 @@
+# Build outputs
+build/
+dist/
+
+# Frontend
+web/node_modules/
+web/src/styles/built.css
+
+# Generated static files (embedded into binary at build time)
+internal/static/dist/*
+!internal/static/dist/.gitkeep
+
+# Go
+*.test
+*.out
+
+# Secrets
+.env
+.env.*
+*.env.local
+
+# Editor & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

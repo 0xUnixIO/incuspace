@@ -1,0 +1,18 @@
+[Unit]
+Description=Incus Panel Web UI
+After=network.target incus.socket
+Requires=incus.socket
+
+[Service]
+Type=simple
+User=incus-panel
+EnvironmentFile=/opt/incus-panel/.env
+ExecStart=/opt/incus-panel/incus-panel --addr :8080 --socket /var/lib/incus/unix.socket
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/incus-panel
+
+[Install]
+WantedBy=multi-user.target

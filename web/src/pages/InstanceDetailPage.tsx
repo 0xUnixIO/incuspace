@@ -1,0 +1,341 @@
+import { useRef, useState, useEffect, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
+import { api, type InstanceState } from "../lib/api";
+import { formatBytes, formatPercent } from "../lib/utils";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal } from "lucide-react";
+
+const MAX_POINTS = 60;
+const INTERVAL_MS = 2000;
+
+interface DataPoint {
+  t: string;
+  cpu: number;
+  memUsed: number;
+  memTotal: number;
+  memPct: number;
+  rxRate: number;
+  txRate: number;
+}
+
+export default function InstanceDetailPage() {
+  const { name } = useParams<{ name: string }>();
+  const navigate = useNavigate();
+
+  const [points, setPoints] = useState<DataPoint[]>([]);
+  const prevRef = useRef<{ cpuNs: number; rxBytes: number; txBytes: number; ts: number } | null>(null);
+  const lastStateRef = useRef<InstanceState | null>(null);
+
+  const { data: instance } = useQuery({
+    queryKey: ["instance", name],
+    queryFn: () => api.instances.get(name!),
+  });
+
+  const tick = useCallback(async () => {
+    if (!name) return;
+    let state: InstanceState;
+    try {
+      state = await api.instances.state(name);
+    } catch {
+      return;
+    }
+    if (state.status !== "Running") return;
+    lastStateRef.current = state;
+
+    const now = Date.now();
+    const timeLabel = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+
+    let rxBytes = 0, txBytes = 0;
+    for (const [iface, net] of Object.entries(state.network ?? {})) {
+      if (iface === "lo") continue;
+      rxBytes += net.counters.bytes_received;
+      txBytes += net.counters.bytes_sent;
+    }
+
+    const prev = prevRef.current;
+    let cpuPct = 0, rxRate = 0, txRate = 0;
+    if (prev) {
+      const dtMs = now - prev.ts;
+      const dtNs = dtMs * 1_000_000;
+      cpuPct = Math.min(((state.cpu.usage - prev.cpuNs) / dtNs) * 100, 100);
+      rxRate = ((rxBytes - prev.rxBytes) / dtMs) * 1000;
+      txRate = ((txBytes - prev.txBytes) / dtMs) * 1000;
+    }
+    prevRef.current = { cpuNs: state.cpu.usage, rxBytes, txBytes, ts: now };
+
+    const memTotal = state.memory.total;
+    const memUsed = state.memory.usage;
+
+    setPoints((prev) => {
+      const next = [
+        ...prev,
+        {
+          t: timeLabel,
+          cpu: parseFloat(cpuPct.toFixed(2)),
+          memUsed,
+          memTotal,
+          memPct: memTotal > 0 ? parseFloat(((memUsed / memTotal) * 100).toFixed(2)) : 0,
+          rxRate: parseFloat(rxRate.toFixed(0)),
+          txRate: parseFloat(txRate.toFixed(0)),
+        },
+      ];
+      return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
+    });
+  }, [name]);
+
+  useEffect(() => {
+    tick();
+    const id = setInterval(tick, INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [tick]);
+
+  const latest = points[points.length - 1];
+
+  // 优先取 expanded_config（Incus 存储镜像元数据的地方），fallback 到 config
+  const cfg = instance?.expanded_config ?? instance?.config ?? {};
+  const imageName = cfg["image.description"] ||
+    `${cfg["image.os"] ?? ""} ${cfg["image.release"] ?? ""}`.trim() || "—";
+  const arch = cfg["image.architecture"] || cfg["volatile.base_image"]?.slice(0, 8) || "—";
+
+  return (
+    <div className="space-y-6">
+      {/* 顶部导航 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("/instances")}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <div>
+            <h1 className="text-xl font-semibold font-mono">{name}</h1>
+            {instance && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {instance.type === "container" ? "容器" : "虚拟机"} · {instance.status}
+              </p>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() => navigate(`/instances/${name}/console`)}
+          className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+        >
+          <Terminal className="w-4 h-4" />
+          控制台
+        </button>
+      </div>
+
+      {/* 配置信息 */}
+      {instance && (
+        <div className="grid grid-cols-2 gap-4">
+          <InfoCard title="基本信息">
+            <InfoRow label="名称" value={instance.name} mono />
+            <InfoRow label="类型" value={instance.type === "container" ? "容器" : "虚拟机"} />
+            <InfoRow label="状态" value={instance.status} />
+            <InfoRow
+              label="创建时间"
+              value={new Date(instance.created_at).toLocaleString("zh-CN")}
+            />
+            <InfoRow
+              label="Profiles"
+              value={instance.profiles?.join(", ") || "default"}
+              mono
+            />
+          </InfoCard>
+
+          <InfoCard title="资源配置">
+            <InfoRow
+              label="CPU 限制"
+              value={instance.config?.["limits.cpu"] || "不限制"}
+            />
+            <InfoRow
+              label="内存限制"
+              value={instance.config?.["limits.memory"] || "不限制"}
+            />
+            <InfoRow
+              label="架构"
+              value={arch}
+            />
+            <InfoRow
+              label="镜像"
+              value={imageName}
+            />
+            <InfoRow
+              label="IP 地址"
+              value={<IpList state={lastStateRef.current} />}
+            />
+          </InfoCard>
+        </div>
+      )}
+
+      {/* 实时指标卡片 */}
+      <div className="grid grid-cols-3 gap-4">
+        <MetricCard
+          icon={<Cpu className="w-4 h-4" />}
+          label="CPU"
+          value={latest ? formatPercent(latest.cpu) : "—"}
+          sub="使用率"
+        />
+        <MetricCard
+          icon={<MemoryStick className="w-4 h-4" />}
+          label="内存"
+          value={latest ? formatPercent(latest.memPct) : "—"}
+          sub={latest ? `${formatBytes(latest.memUsed)} / ${formatBytes(latest.memTotal)}` : "—"}
+        />
+        <MetricCard
+          icon={<Network className="w-4 h-4" />}
+          label="网络"
+          value={latest ? `↓ ${formatBytes(latest.rxRate)}/s` : "—"}
+          sub={latest ? `↑ ${formatBytes(latest.txRate)}/s` : "—"}
+        />
+      </div>
+
+      {/* 图表区 */}
+      <div className="grid grid-cols-1 gap-4">
+        <ChartCard title="CPU 使用率 (%)">
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={points} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gCpu" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis dataKey="t" tick={tickStyle} interval="preserveStartEnd" />
+              <YAxis domain={[0, 100]} tick={tickStyle} />
+              <Tooltip content={<CustomTooltip unit="%" />} />
+              <Area type="monotone" dataKey="cpu" stroke="#3b82f6" fill="url(#gCpu)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="内存使用率 (%)">
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={points} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gMem" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis dataKey="t" tick={tickStyle} interval="preserveStartEnd" />
+              <YAxis domain={[0, 100]} tick={tickStyle} />
+              <Tooltip content={<CustomTooltip unit="%" />} />
+              <Area type="monotone" dataKey="memPct" stroke="#a855f7" fill="url(#gMem)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="网络 I/O (bytes/s)">
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={points} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gRx" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="gTx" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis dataKey="t" tick={tickStyle} interval="preserveStartEnd" />
+              <YAxis tick={tickStyle} tickFormatter={(v) => formatBytes(v)} />
+              <Tooltip content={<NetworkTooltip />} />
+              <Area type="monotone" dataKey="rxRate" name="下行" stroke="#22c55e" fill="url(#gRx)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Area type="monotone" dataKey="txRate" name="上行" stroke="#f59e0b" fill="url(#gTx)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+    </div>
+  );
+}
+
+// --- 子组件 ---
+
+function InfoCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-2">
+      <h3 className="text-sm font-medium text-muted-foreground mb-3">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function InfoRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-4 text-sm py-0.5">
+      <span className="text-muted-foreground shrink-0">{label}</span>
+      <span className={`text-right break-all ${mono ? "font-mono text-xs" : ""}`}>{value}</span>
+    </div>
+  );
+}
+
+function IpList({ state }: { state: InstanceState | null }) {
+  if (!state?.network) return <span className="text-muted-foreground">—</span>;
+  const ips: string[] = [];
+  for (const [iface, net] of Object.entries(state.network)) {
+    if (iface === "lo") continue;
+    for (const addr of net.addresses ?? []) {
+      if (addr.scope === "global") ips.push(`${addr.address} (${iface})`);
+    }
+  }
+  if (ips.length === 0) return <span className="text-muted-foreground">无</span>;
+  return <span className="font-mono text-xs">{ips.join(", ")}</span>;
+}
+
+function MetricCard({ icon, label, value, sub }: { icon: React.ReactNode; label: string; value: string; sub: string }) {
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-2">
+      <div className="flex items-center gap-2 text-muted-foreground text-sm">
+        {icon}
+        {label}
+      </div>
+      <div className="text-2xl font-semibold tabular-nums">{value}</div>
+      <div className="text-xs text-muted-foreground">{sub}</div>
+    </div>
+  );
+}
+
+function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-3">
+      <h3 className="text-sm text-muted-foreground">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+const tickStyle = { fontSize: 11, fill: "#64748b" };
+
+function CustomTooltip({ active, payload, label, unit }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-card border border-border rounded px-2 py-1 text-xs">
+      <p className="text-muted-foreground">{label}</p>
+      <p className="text-foreground font-medium">{payload[0].value}{unit}</p>
+    </div>
+  );
+}
+
+function NetworkTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-card border border-border rounded px-2 py-1 text-xs space-y-1">
+      <p className="text-muted-foreground">{label}</p>
+      {payload.map((p: any) => (
+        <p key={p.dataKey} style={{ color: p.color }}>
+          {p.name}: {formatBytes(p.value)}/s
+        </p>
+      ))}
+    </div>
+  );
+}

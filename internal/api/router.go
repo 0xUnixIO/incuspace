@@ -1,0 +1,47 @@
+package api
+
+import (
+	"github.com/0xUnixIO/incus-panel/internal/api/handler"
+	"github.com/0xUnixIO/incus-panel/internal/auth"
+	"github.com/0xUnixIO/incus-panel/internal/incus"
+	"github.com/go-chi/chi/v5"
+)
+
+func Register(r chi.Router, client *incus.Client) {
+	h := handler.New(client)
+
+	r.Route("/api/v1", func(r chi.Router) {
+		// 公开路由
+		r.Post("/auth/login", h.Login)
+
+		// 需要认证的路由
+		// WebSocket 控制台：浏览器 WS 无法设置 header，通过 query token 认证
+		r.Get("/instances/{name}/console", h.Console)
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.Middleware)
+
+			// 实例
+			r.Get("/instances", h.ListInstances)
+			r.Post("/instances", h.CreateInstance)
+			r.Get("/instances/{name}", h.GetInstance)
+			r.Delete("/instances/{name}", h.DeleteInstance)
+			r.Put("/instances/{name}/action", h.InstanceAction)
+			r.Get("/instances/{name}/state", h.GetInstanceState)
+
+			// 镜像
+			r.Get("/images", h.ListImages)
+			r.Delete("/images/{fingerprint}", h.DeleteImage)
+			r.Get("/images/remote", h.ListRemoteImages)
+
+			// 网络
+			r.Get("/networks", h.ListNetworks)
+
+			// 存储池
+			r.Get("/storage-pools", h.ListStoragePools)
+
+			// 异步操作
+			r.Get("/operations", h.ListOperations)
+		})
+	})
+}
