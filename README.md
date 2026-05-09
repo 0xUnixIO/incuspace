@@ -1,49 +1,49 @@
 # incuspace
 
-A lightweight web UI for managing [Incus](https://linuxcontainers.org/incus/) containers and virtual machines — a self-hosted alternative to Proxmox for LXC workloads.
+基于 Web 的 [Incus](https://linuxcontainers.org/incus/) 容器与虚拟机管理面板，轻量级的自托管 Proxmox 替代方案。
 
 ![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![License](https://img.shields.io/github/license/0xUnixIO/incuspace)
 ![Release](https://img.shields.io/github/v/release/0xUnixIO/incuspace)
 
-## Features
+## 功能
 
-- **Instance management** — create, start, stop, restart, delete containers and VMs
-- **Real-time monitoring** — live CPU, memory, and network I/O charts (2s polling)
-- **Web console** — full xterm.js terminal via WebSocket, with resize support
-- **Image management** — browse local and remote images (images.linuxcontainers.org)
-- **Single binary** — frontend embedded in the Go binary, no external dependencies
-- **JWT auth** — token-based authentication, configurable via environment variables
+- **实例管理** — 创建、启动、停止、重启、删除容器和虚拟机
+- **实时监控** — CPU、内存、网络 I/O 实时图表（2 秒轮询）
+- **Web 控制台** — 基于 xterm.js 的全功能终端，支持窗口大小自适应
+- **镜像管理** — 浏览本地镜像及远程镜像（images.linuxcontainers.org）
+- **单文件部署** — 前端资源嵌入 Go 二进制，无额外依赖
+- **JWT 认证** — 基于 Token 的鉴权，通过环境变量配置账号密码
 
-## Quick Install
+## 一键安装
 
-Requires Ubuntu or Debian with Incus already installed.
+需要 Ubuntu 或 Debian，Incus 会由脚本自动安装。
 
 ```bash
 curl -fsSL https://github.com/0xUnixIO/incuspace/releases/latest/download/install.sh | bash
 ```
 
-The script will:
-1. Install Incus if not present (via [zabbly packages](https://pkgs.zabbly.com/incus/stable))
-2. Download the pre-built binary for your architecture (amd64 / arm64)
-3. Create a dedicated system user and `/opt/incuspace/.env` with a random password
-4. Register and start a systemd service
+脚本会自动完成：
 
-After install, the access URL and credentials are printed to stdout. The password is also saved at `/opt/incuspace/.env`.
+1. 若未安装 Incus，通过 [zabbly 源](https://pkgs.zabbly.com/incus/stable)安装
+2. 根据系统架构（amd64 / arm64）下载预编译二进制
+3. 创建专用系统用户，生成随机密码并写入 `/opt/incuspace/.env`
+4. 注册并启动 systemd 服务
 
-### Custom port
+安装完成后，访问地址和初始密码会打印到终端，密码同时保存在 `/opt/incuspace/.env`。
+
+**自定义端口：**
 
 ```bash
 PANEL_PORT=9090 curl -fsSL https://github.com/0xUnixIO/incuspace/releases/latest/download/install.sh | bash
 ```
 
-## Manual Install
+## 手动安装
 
-Download a binary from [Releases](https://github.com/0xUnixIO/incuspace/releases), then:
+从 [Releases](https://github.com/0xUnixIO/incuspace/releases) 下载对应架构的二进制文件，然后：
 
 ```bash
-# Create config
 mkdir -p /opt/incuspace
 cat > /opt/incuspace/.env <<EOF
 ADMIN_USER=admin
@@ -51,85 +51,81 @@ ADMIN_PASS=yourpassword
 JWT_SECRET=$(openssl rand -base64 32)
 EOF
 
-# Run
-ADMIN_USER=admin ADMIN_PASS=yourpassword JWT_SECRET=... \
-  ./incuspace --addr :8080 --socket /var/lib/incus/unix.socket
+./incuspace --addr :8080 --socket /var/lib/incus/unix.socket
 ```
 
-## Development
+## 开发
 
-### Prerequisites
+### 环境依赖
 
 - [Go](https://go.dev/) 1.23+
 - [Bun](https://bun.sh/) 1.x
-- [Incus](https://linuxcontainers.org/incus/) running on a Linux host
+- 运行在 Linux 宿主机上的 [Incus](https://linuxcontainers.org/incus/)
 
-### macOS (OrbStack)
+### macOS（OrbStack）
 
-Incus requires Linux. On macOS, run the backend inside an OrbStack VM and the frontend on the host:
+Incus 只能在 Linux 上运行。macOS 开发时，后端跑在 OrbStack VM 里，前端在宿主机：
 
 ```bash
 make dev-orb
 ```
 
-This cross-compiles the backend for `linux/arm64`, copies it into the OrbStack VM, starts it via `systemd-run`, and launches the Bun dev server on `localhost:5173` proxying API requests to the VM.
+该命令会将后端交叉编译为 `linux/arm64`，复制到 OrbStack VM 并通过 `systemd-run` 启动，同时在本机启动 Bun 开发服务器（`localhost:5173`），API 请求代理到 VM。
 
 ### Linux
 
 ```bash
-# Install frontend deps
-cd web && bun install
+cd web && bun install  # 安装前端依赖
 
-# Start both frontend dev server and backend
-make dev
+make dev               # 同时启动前端开发服务器和后端
 ```
 
-Frontend dev server: `http://localhost:5173`  
-Backend API: `http://localhost:8080`
+- 前端开发服务器：`http://localhost:5173`
+- 后端 API：`http://localhost:8080`
 
-### Build
+### 构建
 
 ```bash
-make build          # frontend → embedded → single binary in build/incuspace
-make build-web      # frontend only
-make build-go       # backend only (requires frontend already built)
+make build      # 完整构建：前端编译 → 嵌入二进制 → build/incuspace
+make build-web  # 仅构建前端
+make build-go   # 仅构建后端（需先完成前端构建）
 ```
 
-### Environment Variables
+### 环境变量
 
-| Variable | Default | Description |
+| 变量 | 默认值 | 说明 |
 |---|---|---|
-| `ADMIN_USER` | `admin` | Login username |
-| `ADMIN_PASS` | `admin` | Login password |
-| `JWT_SECRET` | random | JWT signing secret |
-| `STATIC_DIR` | embedded | Override static file path (dev mode) |
+| `ADMIN_USER` | `admin` | 登录用户名 |
+| `ADMIN_PASS` | `admin` | 登录密码 |
+| `JWT_SECRET` | 随机生成 | JWT 签名密钥 |
+| `STATIC_DIR` | 内嵌资源 | 覆盖静态文件路径（开发模式用） |
 
-## Architecture
+## 项目结构
 
 ```
-cmd/incuspace/        # entrypoint, embeds frontend via go:embed
+cmd/incuspace/        # 程序入口，通过 go:embed 内嵌前端资源
 internal/
-  api/                # chi router + handlers
-  auth/               # JWT middleware
-  incus/              # Incus Unix socket client
-  static/             # embedded frontend assets
+  api/                # chi 路由与请求处理
+  auth/               # JWT 中间件
+  incus/              # Incus Unix socket 客户端
+  static/             # 内嵌前端产物
 web/src/
-  pages/              # React pages (Instances, Detail, Console, Images, ...)
-  lib/api.ts          # typed API client
-  dev-server.ts       # Bun dev server with HTTP + WebSocket proxy
+  pages/              # React 页面（实例、详情、控制台、镜像…）
+  lib/api.ts          # 类型化 API 客户端
+  dev-server.ts       # Bun 开发服务器（HTTP + WebSocket 代理）
 ```
 
-The binary embeds `internal/static/dist/` at compile time. The build pipeline is:
+构建流程：
 
 ```
 bun run build  →  internal/static/dist/
-go build       →  build/incuspace  (includes embedded dist/)
+go build       →  build/incuspace（包含内嵌的前端资源）
 ```
 
-## Notes
+## 注意事项
 
-- **Virtual machines** require KVM (`/dev/kvm`) on the host. Nested virtualization environments (e.g., OrbStack VMs) only support containers.
-- The web console connects via WebSocket. The JWT token is passed as a query parameter (`?token=...`) since browsers cannot set custom headers on WebSocket upgrades.
+- **虚拟机**需要宿主机支持 KVM（`/dev/kvm`），OrbStack VM 等嵌套虚拟化环境仅支持容器。
+- Web 控制台通过 WebSocket 连接，JWT Token 以查询参数（`?token=...`）传递，因为浏览器的 WebSocket 不支持自定义请求头。
 
 ## License
 
