@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0xUnixIO/incus-panel/internal/auth"
-	"github.com/0xUnixIO/incus-panel/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/auth"
+	"github.com/0xUnixIO/incuspace/internal/incus"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	incusclient "github.com/lxc/incus/v6/client"

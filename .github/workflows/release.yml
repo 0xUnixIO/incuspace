@@ -33,15 +33,15 @@ jobs:
           LDFLAGS="-s -w -X main.Version=${VERSION}"
 
           GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" \
-            -o release/incus-panel-linux-amd64 ./cmd/incus-panel
+            -o release/incuspace-linux-amd64 ./cmd/incuspace
 
           GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" \
-            -o release/incus-panel-linux-arm64 ./cmd/incus-panel
+            -o release/incuspace-linux-arm64 ./cmd/incuspace
 
       - name: Generate checksums
         run: |
           cd release
-          sha256sum incus-panel-linux-amd64 incus-panel-linux-arm64 > sha256sums.txt
+          sha256sum incuspace-linux-amd64 incuspace-linux-arm64 > sha256sums.txt
           cat sha256sums.txt
 
       - name: Copy install script
@@ -52,7 +52,7 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            release/incus-panel-linux-amd64
-            release/incus-panel-linux-arm64
+            release/incuspace-linux-amd64
+            release/incuspace-linux-arm64
             release/sha256sums.txt
             release/install.sh

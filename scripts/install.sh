@@ -10,8 +10,8 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 PANEL_VERSION="${PANEL_VERSION:-latest}"
-PANEL_USER="incus-panel"
-PANEL_DIR="/opt/incus-panel"
+PANEL_USER="incuspace"
+PANEL_DIR="/opt/incuspace"
 PANEL_PORT="${PANEL_PORT:-8080}"
 
 # --- 检查权限 ---
@@ -59,9 +59,9 @@ EOF
   info "Incus 安装完成"
 }
 
-# --- 安装 incus-panel ---
+# --- 安装 incuspace ---
 install_panel() {
-  info "安装 incus-panel..."
+  info "安装 incuspace..."
 
   # 下载预编译 binary（或从源码构建）
   ARCH=$(uname -m)
@@ -71,14 +71,14 @@ install_panel() {
     *)       error "不支持的架构: $ARCH" ;;
   esac
 
-  DOWNLOAD_URL="https://github.com/0xUnixIO/incus-panel/releases/download/${PANEL_VERSION}/incus-panel-linux-${ARCH_TAG}"
+  DOWNLOAD_URL="https://github.com/0xUnixIO/incuspace/releases/download/${PANEL_VERSION}/incuspace-linux-${ARCH_TAG}"
   mkdir -p "$PANEL_DIR"
 
-  if [[ "$PANEL_VERSION" == "latest" ]] || ! curl -fsSL "$DOWNLOAD_URL" -o "$PANEL_DIR/incus-panel" 2>/dev/null; then
+  if [[ "$PANEL_VERSION" == "latest" ]] || ! curl -fsSL "$DOWNLOAD_URL" -o "$PANEL_DIR/incuspace" 2>/dev/null; then
     warn "未找到预编译包，尝试从源码构建..."
     build_from_source
   else
-    chmod +x "$PANEL_DIR/incus-panel"
+    chmod +x "$PANEL_DIR/incuspace"
   fi
 
   # 创建系统用户
@@ -99,7 +99,7 @@ EOF
   chown -R "$PANEL_USER:$PANEL_USER" "$PANEL_DIR"
 
   # 安装 systemd 服务
-  cat > /etc/systemd/system/incus-panel.service <<EOF
+  cat > /etc/systemd/system/incuspace.service <<EOF
 [Unit]
 Description=Incus Panel Web UI
 After=network.target incus.socket
@@ -109,7 +109,7 @@ Requires=incus.socket
 Type=simple
 User=${PANEL_USER}
 EnvironmentFile=${PANEL_DIR}/.env
-ExecStart=${PANEL_DIR}/incus-panel --addr :${PANEL_PORT} --socket /var/lib/incus/unix.socket
+ExecStart=${PANEL_DIR}/incuspace --addr :${PANEL_PORT} --socket /var/lib/incus/unix.socket
 Restart=on-failure
 RestartSec=5
 
@@ -118,8 +118,8 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable --now incus-panel
-  info "incus-panel 安装完成"
+  systemctl enable --now incuspace
+  info "incuspace 安装完成"
 }
 
 build_from_source() {
@@ -137,11 +137,11 @@ build_from_source() {
   fi
 
   TMP=$(mktemp -d)
-  git clone --depth 1 https://github.com/0xUnixIO/incus-panel "$TMP/incus-panel"
-  cd "$TMP/incus-panel"
+  git clone --depth 1 https://github.com/0xUnixIO/incuspace "$TMP/incuspace"
+  cd "$TMP/incuspace"
   make build
-  cp build/incus-panel "$PANEL_DIR/incus-panel"
-  chmod +x "$PANEL_DIR/incus-panel"
+  cp build/incuspace "$PANEL_DIR/incuspace"
+  chmod +x "$PANEL_DIR/incuspace"
   rm -rf "$TMP"
 }
 

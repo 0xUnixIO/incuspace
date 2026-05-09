@@ -1,9 +1,9 @@
 package api
 
 import (
-	"github.com/0xUnixIO/incus-panel/internal/api/handler"
-	"github.com/0xUnixIO/incus-panel/internal/auth"
-	"github.com/0xUnixIO/incus-panel/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/api/handler"
+	"github.com/0xUnixIO/incuspace/internal/auth"
+	"github.com/0xUnixIO/incuspace/internal/incus"
 	"github.com/go-chi/chi/v5"
 )
 

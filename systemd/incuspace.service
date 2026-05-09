@@ -5,14 +5,14 @@ Requires=incus.socket
 
 [Service]
 Type=simple
-User=incus-panel
-EnvironmentFile=/opt/incus-panel/.env
-ExecStart=/opt/incus-panel/incus-panel --addr :8080 --socket /var/lib/incus/unix.socket
+User=incuspace
+EnvironmentFile=/opt/incuspace/.env
+ExecStart=/opt/incuspace/incuspace --addr :8080 --socket /var/lib/incus/unix.socket
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/incus-panel
+ReadWritePaths=/opt/incuspace
 
 [Install]
 WantedBy=multi-user.target

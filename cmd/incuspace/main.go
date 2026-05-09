@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/0xUnixIO/incus-panel/internal/api"
-	"github.com/0xUnixIO/incus-panel/internal/incus"
-	"github.com/0xUnixIO/incus-panel/internal/static"
+	"github.com/0xUnixIO/incuspace/internal/api"
+	"github.com/0xUnixIO/incuspace/internal/incus"
+	"github.com/0xUnixIO/incuspace/internal/static"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )

@@ -1,4 +1,4 @@
-module github.com/0xUnixIO/incus-panel
+module github.com/0xUnixIO/incuspace
 
 go 1.26.1
 

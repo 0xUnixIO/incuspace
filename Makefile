@@ -1,4 +1,4 @@
-BINARY   := incus-panel
+BINARY   := incuspace
 BUILD_DIR := build
 WEB_DIR   := web
 
@@ -14,7 +14,7 @@ build-web:
 # 构建后端
 build-go:
 	@echo ">> 构建后端..."
-	go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY) ./cmd/incus-panel
+	go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY) ./cmd/incuspace
 
 # 完整构建（先前端后后端，前端产物嵌入 binary）
 build: build-web build-go
@@ -24,7 +24,7 @@ build: build-web build-go
 dev:
 	@echo ">> 启动开发服务器..."
 	cd $(WEB_DIR) && bun run dev &
-	go run ./cmd/incus-panel --addr :8080
+	go run ./cmd/incuspace --addr :8080
 
 # macOS 本地开发（OrbStack 里跑后端，macOS 跑前端）
 dev-orb:
@@ -38,6 +38,6 @@ clean:
 # 安装到系统（需要 root）
 install: build
 	install -Dm755 $(BUILD_DIR)/$(BINARY) /usr/local/bin/$(BINARY)
-	install -Dm644 systemd/incus-panel.service /etc/systemd/system/
+	install -Dm644 systemd/incuspace.service /etc/systemd/system/
 	systemctl daemon-reload
-	@echo ">> 安装完成，运行: systemctl enable --now incus-panel"
+	@echo ">> 安装完成，运行: systemctl enable --now incuspace"

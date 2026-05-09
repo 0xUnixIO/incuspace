@@ -5,7 +5,7 @@
 set -euo pipefail
 
 MACHINE="incus-dev"
-UNIT="incus-panel-dev"
+UNIT="incuspace-dev"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 GREEN='\033[0;32m'; NC='\033[0m'
@@ -63,18 +63,18 @@ EOF
 GOARCH_TARGET=$(orb run -m "$MACHINE" uname -m | tr -d '\r' | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 info "交叉编译后端 (linux/${GOARCH_TARGET})..."
 cd "$PROJECT_DIR"
-GOOS=linux GOARCH="$GOARCH_TARGET" go build -ldflags="-s -w" -o "$HOME/incus-panel-linux" ./cmd/incus-panel
-info "编译完成 → ~/incus-panel-linux"
+GOOS=linux GOARCH="$GOARCH_TARGET" go build -ldflags="-s -w" -o "$HOME/incuspace-linux" ./cmd/incuspace
+info "编译完成 → ~/incuspace-linux"
 
 # --- 4. 停止旧进程 + 复制新 binary ---
 info "部署 binary 到 VM..."
 orb run -m "$MACHINE" -u root bash <<VMEOF
 # 先停止 systemd unit，再 pkill 兜底
 systemctl stop ${UNIT} 2>/dev/null || true
-pkill -f incus-panel 2>/dev/null || true
+pkill -f incuspace 2>/dev/null || true
 sleep 0.5
-cp "/Users/$(whoami)/incus-panel-linux" /tmp/incus-panel
-chmod +x /tmp/incus-panel
+cp "/Users/$(whoami)/incuspace-linux" /tmp/incuspace
+chmod +x /tmp/incuspace
 VMEOF
 
 # --- 5. 用 systemd-run 启动后端（会话结束后进程继续存活）---
@@ -89,7 +89,7 @@ systemd-run \
   --collect \
   --setenv=ADMIN_USER=admin \
   --setenv=ADMIN_PASS=admin \
-  /tmp/incus-panel --addr :8080
+  /tmp/incuspace --addr :8080
 
 sleep 1
 if ss -tlnp | grep -q ':8080'; then
