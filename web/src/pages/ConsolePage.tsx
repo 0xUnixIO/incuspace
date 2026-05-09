@@ -73,10 +73,11 @@ export default function ConsolePage() {
     ws.onerror = () => term.writeln("\r\n\x1b[31m连接错误\x1b[0m");
     ws.onclose = () => term.writeln("\r\n\x1b[33m连接已断开\x1b[0m");
 
-    // 终端输入 → WebSocket
+    // 终端输入 → WebSocket（必须用 binary frame，text frame 被后端用于 resize 控制消息）
+    const encoder = new TextEncoder();
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
+        ws.send(encoder.encode(data));
       }
     });
 
