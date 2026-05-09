@@ -92,6 +92,38 @@ export const api = {
   operations: {
     list: () => request<IncusOperation[]>("/operations"),
   },
+  files: {
+    list: (name: string, path: string) =>
+      request<FileEntry[]>(`/instances/${name}/files?path=${encodeURIComponent(path)}`),
+    download: async (name: string, path: string) => {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`${BASE}/instances/${name}/files/download?path=${encodeURIComponent(path)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("下载失败");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = path.split("/").pop() ?? "file";
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    upload: (name: string, destPath: string, file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      const token = localStorage.getItem("token");
+      return fetch(`${BASE}/instances/${name}/files?path=${encodeURIComponent(destPath)}`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      }).then((res) => {
+        if (!res.ok) return res.json().then((e) => { throw new Error(e.message); });
+      });
+    },
+    delete: (name: string, path: string) =>
+      request<void>(`/instances/${name}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
+  },
 };
 
 // --- 类型定义 ---
@@ -190,4 +222,10 @@ export interface Snapshot {
   name: string;
   created_at: string;
   stateful: boolean;
+}
+
+export interface FileEntry {
+  name: string;
+  type: "file" | "directory" | "symlink";
+  mode: number;
 }

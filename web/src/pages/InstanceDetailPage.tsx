@@ -8,7 +8,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
 import { api, type InstanceState, type Snapshot } from "../lib/api";
 import { formatBytes, formatPercent } from "../lib/utils";
-import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, Pencil, X, Plus, Trash2, RotateCw } from "lucide-react";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw } from "lucide-react";
 
 const MAX_POINTS = 60;
 const INTERVAL_MS = 2000;
@@ -149,13 +149,22 @@ export default function InstanceDetailPage() {
             )}
           </div>
         </div>
-        <button
-          onClick={() => navigate(`/instances/${name}/console`)}
-          className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-        >
-          <Terminal className="w-4 h-4" />
-          控制台
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => navigate(`/instances/${name}/files`)}
+            className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <FolderOpen className="w-4 h-4" />
+            文件
+          </button>
+          <button
+            onClick={() => navigate(`/instances/${name}/console`)}
+            className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Terminal className="w-4 h-4" />
+            控制台
+          </button>
+        </div>
       </div>
 
       {/* 配置信息 */}

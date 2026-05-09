@@ -52,6 +52,12 @@ func Register(r chi.Router, client *incus.Client) {
 
 			// 异步操作
 			r.Get("/operations", h.ListOperations)
+
+			// 文件管理
+			r.Get("/instances/{name}/files", h.ListInstanceFiles)
+			r.Get("/instances/{name}/files/download", h.DownloadInstanceFile)
+			r.Post("/instances/{name}/files", h.UploadInstanceFile)
+			r.Delete("/instances/{name}/files", h.DeleteInstanceFile)
 		})
 	})
 }

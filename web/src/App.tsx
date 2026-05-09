@@ -4,6 +4,7 @@ import Layout from "./components/Layout";
 import LoginPage from "./pages/LoginPage";
 import InstancesPage from "./pages/InstancesPage";
 import InstanceDetailPage from "./pages/InstanceDetailPage";
+import InstanceFilesPage from "./pages/InstanceFilesPage";
 import ConsolePage from "./pages/ConsolePage";
 import ImagesPage from "./pages/ImagesPage";
 import NetworksPage from "./pages/NetworksPage";
@@ -40,6 +41,7 @@ export default function App() {
           <Route index element={<Navigate to="/instances" replace />} />
           <Route path="instances" element={<InstancesPage />} />
           <Route path="instances/:name" element={<InstanceDetailPage />} />
+          <Route path="instances/:name/files" element={<InstanceFilesPage />} />
           <Route path="images" element={<ImagesPage />} />
           <Route path="networks" element={<NetworksPage />} />
           <Route path="storage" element={<StoragePage />} />

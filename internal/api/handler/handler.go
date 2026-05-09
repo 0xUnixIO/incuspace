@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -477,6 +479,141 @@ func (h *Handler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if err := h.client.Server().DeleteNetwork(name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- 文件管理 ----
+
+// FileEntry 文件条目（列目录时返回）
+type FileEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"` // "file" | "directory" | "symlink"
+	Mode int    `json:"mode"`
+}
+
+// ListInstanceFiles 列出目录内容，并发 stat 每个条目获取类型
+func (h *Handler) ListInstanceFiles(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		path = "/"
+	}
+
+	_, resp, err := h.client.Server().GetInstanceFile(name, path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if resp.Type != "directory" {
+		writeError(w, http.StatusBadRequest, "not a directory")
+		return
+	}
+
+	type statResult struct {
+		name string
+		typ  string
+		mode int
+	}
+
+	results := make([]statResult, len(resp.Entries))
+	var wg sync.WaitGroup
+	for i, entry := range resp.Entries {
+		wg.Add(1)
+		go func(i int, entry string) {
+			defer wg.Done()
+			entryPath := strings.TrimRight(path, "/") + "/" + entry
+			_, er, err2 := h.client.Server().GetInstanceFile(name, entryPath)
+			results[i].name = entry
+			if err2 == nil && er != nil {
+				results[i].typ = er.Type
+				results[i].mode = er.Mode
+			} else {
+				results[i].typ = "file"
+			}
+		}(i, entry)
+	}
+	wg.Wait()
+
+	entries := make([]FileEntry, len(results))
+	for i, r := range results {
+		entries[i] = FileEntry{Name: r.name, Type: r.typ, Mode: r.mode}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// DownloadInstanceFile 下载容器内文件，流式返回
+func (h *Handler) DownloadInstanceFile(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		writeError(w, http.StatusBadRequest, "path required")
+		return
+	}
+
+	reader, resp, err := h.client.Server().GetInstanceFile(name, filePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if resp.Type == "directory" {
+		writeError(w, http.StatusBadRequest, "cannot download a directory")
+		return
+	}
+	defer reader.Close()
+
+	filename := filePath[strings.LastIndex(filePath, "/")+1:]
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	io.Copy(w, reader)
+}
+
+// UploadInstanceFile 上传文件到容器，接受 multipart/form-data（字段名 file，目标路径通过 query path 传递）
+func (h *Handler) UploadInstanceFile(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	destPath := r.URL.Query().Get("path")
+	if destPath == "" {
+		writeError(w, http.StatusBadRequest, "path required")
+		return
+	}
+
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "parse form failed")
+		return
+	}
+	f, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file field required")
+		return
+	}
+	defer f.Close()
+
+	err = h.client.Server().CreateInstanceFile(name, destPath, incusclient.InstanceFileArgs{
+		Content:   f,
+		Type:      "file",
+		WriteMode: "overwrite",
+		Mode:      0644,
+		UID:       0,
+		GID:       0,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": destPath})
+}
+
+// DeleteInstanceFile 删除容器内文件或目录
+func (h *Handler) DeleteInstanceFile(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		writeError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if err := h.client.Server().DeleteInstanceFile(name, filePath); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
