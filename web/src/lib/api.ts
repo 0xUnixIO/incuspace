@@ -47,14 +47,42 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ config, description }),
       }),
+    snapshots: {
+      list: (name: string) => request<Snapshot[]>(`/instances/${name}/snapshots`),
+      create: (name: string, snapName: string, stateful = false) =>
+        request<Operation>(`/instances/${name}/snapshots`, {
+          method: "POST",
+          body: JSON.stringify({ name: snapName, stateful }),
+        }),
+      delete: (name: string, snap: string) =>
+        request<Operation>(`/instances/${name}/snapshots/${snap}`, { method: "DELETE" }),
+      restore: (name: string, snap: string) =>
+        request<Operation>(`/instances/${name}/snapshots/${snap}/restore`, { method: "POST" }),
+    },
   },
   images: {
     list: () => request<Image[]>("/images"),
     delete: (fingerprint: string) =>
       request<void>(`/images/${fingerprint}`, { method: "DELETE" }),
+    pull: (alias: string, server = "https://images.linuxcontainers.org") =>
+      request<Operation>("/images/pull", {
+        method: "POST",
+        body: JSON.stringify({ alias, server, protocol: "simplestreams" }),
+      }),
   },
   networks: {
     list: () => request<Network[]>("/networks"),
+    create: (name: string, cidr: string) =>
+      request<{ name: string }>("/networks", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          type: "bridge",
+          config: { "ipv4.address": cidr, "ipv4.nat": "true", "ipv6.address": "none" },
+        }),
+      }),
+    delete: (name: string) =>
+      request<void>(`/networks/${name}`, { method: "DELETE" }),
   },
   storage: {
     pools: () => request<StoragePool[]>("/storage-pools"),
@@ -153,4 +181,10 @@ export interface StoragePool {
   driver: string;
   status: string;
   config: Record<string, string>;
+}
+
+export interface Snapshot {
+  name: string;
+  created_at: string;
+  stateful: boolean;
 }

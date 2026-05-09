@@ -30,13 +30,22 @@ func Register(r chi.Router, client *incus.Client) {
 			r.Put("/instances/{name}/action", h.InstanceAction)
 			r.Get("/instances/{name}/state", h.GetInstanceState)
 
+			// 实例快照
+			r.Get("/instances/{name}/snapshots", h.ListSnapshots)
+			r.Post("/instances/{name}/snapshots", h.CreateSnapshot)
+			r.Delete("/instances/{name}/snapshots/{snap}", h.DeleteSnapshot)
+			r.Post("/instances/{name}/snapshots/{snap}/restore", h.RestoreSnapshot)
+
 			// 镜像
 			r.Get("/images", h.ListImages)
 			r.Delete("/images/{fingerprint}", h.DeleteImage)
 			r.Get("/images/remote", h.ListRemoteImages)
+			r.Post("/images/pull", h.PullImage)
 
 			// 网络
 			r.Get("/networks", h.ListNetworks)
+			r.Post("/networks", h.CreateNetwork)
+			r.Delete("/networks/{name}", h.DeleteNetwork)
 
 			// 存储池
 			r.Get("/storage-pools", h.ListStoragePools)

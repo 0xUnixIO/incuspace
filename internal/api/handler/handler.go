@@ -352,3 +352,133 @@ func (w *wsWriter) Write(p []byte) (int, error) {
 }
 
 func (w *wsWriter) Close() error { return nil }
+
+// ---- 快照管理 ----
+
+func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	snaps, err := h.client.Server().GetInstanceSnapshots(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, snaps)
+}
+
+func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	var req incusapi.InstanceSnapshotsPost
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	op, err := h.client.Server().CreateInstanceSnapshot(name, req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, op)
+}
+
+func (h *Handler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	snap := chi.URLParam(r, "snap")
+	op, err := h.client.Server().DeleteInstanceSnapshot(name, snap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, op)
+}
+
+// RestoreSnapshot 通过 PUT instance 的 Restore 字段恢复快照
+func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	snap := chi.URLParam(r, "snap")
+
+	inst, etag, err := h.client.Server().GetInstance(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	put := inst.Writable()
+	put.Restore = snap
+	op, err := h.client.Server().UpdateInstance(name, put, etag)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, op)
+}
+
+// ---- 镜像拉取 ----
+
+// PullImage 从远程服务器拉取镜像到本地
+func (h *Handler) PullImage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Alias    string `json:"alias"`
+		Server   string `json:"server"`
+		Protocol string `json:"protocol"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if req.Alias == "" {
+		writeError(w, http.StatusBadRequest, "alias is required")
+		return
+	}
+	if req.Server == "" {
+		req.Server = "https://images.linuxcontainers.org"
+	}
+	if req.Protocol == "" {
+		req.Protocol = "simplestreams"
+	}
+
+	imgPost := incusapi.ImagesPost{
+		Source: &incusapi.ImagesPostSource{
+			ImageSource: incusapi.ImageSource{
+				Server:   req.Server,
+				Protocol: req.Protocol,
+				Alias:    req.Alias,
+			},
+			Type: "image",
+			Mode: "pull",
+		},
+		Aliases: []incusapi.ImageAlias{{Name: req.Alias}},
+	}
+
+	op, err := h.client.Server().CreateImage(imgPost, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, op)
+}
+
+// ---- 网络管理 ----
+
+func (h *Handler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
+	var req incusapi.NetworksPost
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if req.Type == "" {
+		req.Type = "bridge"
+	}
+	if err := h.client.Server().CreateNetwork(req); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+}
+
+func (h *Handler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := h.client.Server().DeleteNetwork(name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

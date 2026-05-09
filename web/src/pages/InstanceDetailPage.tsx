@@ -6,9 +6,9 @@ import {
 } from "recharts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { api, type InstanceState } from "../lib/api";
+import { api, type InstanceState, type Snapshot } from "../lib/api";
 import { formatBytes, formatPercent } from "../lib/utils";
-import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, Pencil, X } from "lucide-react";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, Pencil, X, Plus, Trash2, RotateCw } from "lucide-react";
 
 const MAX_POINTS = 60;
 const INTERVAL_MS = 2000;
@@ -33,10 +33,17 @@ export default function InstanceDetailPage() {
 
   const qc = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
+  const [snapOpen, setSnapOpen] = useState(false);
 
   const { data: instance } = useQuery({
     queryKey: ["instance", name],
     queryFn: () => api.instances.get(name!),
+  });
+
+  const { data: snapshots = [] } = useQuery({
+    queryKey: ["snapshots", name],
+    queryFn: () => api.instances.snapshots.list(name!),
+    enabled: !!name,
   });
 
   const tick = useCallback(async () => {
@@ -99,11 +106,28 @@ export default function InstanceDetailPage() {
 
   const latest = points[points.length - 1];
 
-  // 优先取 expanded_config（Incus 存储镜像元数据的地方），fallback 到 config
   const cfg = instance?.expanded_config ?? instance?.config ?? {};
   const imageName = cfg["image.description"] ||
     `${cfg["image.os"] ?? ""} ${cfg["image.release"] ?? ""}`.trim() || "—";
   const arch = cfg["image.architecture"] || cfg["volatile.base_image"]?.slice(0, 8) || "—";
+
+  const deleteSnapMutation = useMutation({
+    mutationFn: (snap: string) => api.instances.snapshots.delete(name!, snap),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["snapshots", name] });
+      toast.success("快照已删除");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const restoreSnapMutation = useMutation({
+    mutationFn: (snap: string) => api.instances.snapshots.restore(name!, snap),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["instance", name] });
+      toast.success("已恢复到快照");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   return (
     <div className="space-y-6">
@@ -270,6 +294,75 @@ export default function InstanceDetailPage() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+
+      {/* 快照区域 */}
+      <div className="border border-border rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+          <h3 className="text-sm font-medium">快照</h3>
+          <button
+            onClick={() => setSnapOpen(true)}
+            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            创建快照
+          </button>
+        </div>
+
+        {snapshots.length === 0 ? (
+          <div className="text-center py-10 text-muted-foreground text-sm">暂无快照</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="border-b border-border">
+              <tr>
+                <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">名称</th>
+                <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">创建时间</th>
+                <th className="text-left px-4 py-2.5 text-muted-foreground font-medium">有状态</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {snapshots.map((snap) => (
+                <tr key={snap.name} className="hover:bg-accent/30 transition-colors">
+                  <td className="px-4 py-3 font-mono text-xs">{snap.name}</td>
+                  <td className="px-4 py-3 text-muted-foreground text-xs">
+                    {new Date(snap.created_at).toLocaleString("zh-CN")}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground text-xs">
+                    {snap.stateful ? "是" : "否"}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        title="恢复"
+                        onClick={() => {
+                          if (confirm(`恢复将覆盖当前状态，确认恢复到快照 "${snap.name}"？`))
+                            restoreSnapMutation.mutate(snap.name);
+                        }}
+                        disabled={restoreSnapMutation.isPending || deleteSnapMutation.isPending}
+                        className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                      >
+                        <RotateCw className="w-4 h-4" />
+                      </button>
+                      <button
+                        title="删除"
+                        onClick={() => {
+                          if (confirm(`确认删除快照 "${snap.name}"？`))
+                            deleteSnapMutation.mutate(snap.name);
+                        }}
+                        disabled={deleteSnapMutation.isPending || restoreSnapMutation.isPending}
+                        className="p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       {instance && (
         <EditConfigDialog
           open={editOpen}
@@ -280,6 +373,13 @@ export default function InstanceDetailPage() {
           onSaved={() => qc.invalidateQueries({ queryKey: ["instance", name] })}
         />
       )}
+
+      <CreateSnapshotDialog
+        open={snapOpen}
+        onOpenChange={setSnapOpen}
+        instanceName={name!}
+        onSuccess={() => qc.invalidateQueries({ queryKey: ["snapshots", name] })}
+      />
     </div>
   );
 }
@@ -383,7 +483,6 @@ function EditConfigDialog({
   const [cpu, setCpu] = useState(currentCpu);
   const [mem, setMem] = useState(currentMem);
 
-  // 每次打开时同步最新值
   useEffect(() => {
     if (open) { setCpu(currentCpu); setMem(currentMem); }
   }, [open, currentCpu, currentMem]);
@@ -451,6 +550,92 @@ function EditConfigDialog({
               {mutation.isPending ? "保存中..." : "保存"}
             </button>
           </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function CreateSnapshotDialog({
+  open,
+  onOpenChange,
+  instanceName,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  instanceName: string;
+  onSuccess: () => void;
+}) {
+  const [snapName, setSnapName] = useState("");
+
+  function handleOpenChange(v: boolean) {
+    if (!mutation.isPending) {
+      setSnapName("");
+      onOpenChange(v);
+    }
+  }
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      const finalName = snapName.trim() || new Date().toISOString().replace(/[:.]/g, "-");
+      return api.instances.snapshots.create(instanceName, finalName);
+    },
+    onSuccess: () => {
+      toast.success("快照已创建");
+      onSuccess();
+      handleOpenChange(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    mutation.mutate();
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={handleOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <Dialog.Title className="text-base font-semibold">创建快照</Dialog.Title>
+            <Dialog.Close className="text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </Dialog.Close>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">快照名称</label>
+              <input
+                value={snapName}
+                onChange={(e) => setSnapName(e.target.value)}
+                placeholder="留空则使用时间戳"
+                className={inputCls}
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="flex-1 py-2 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  取消
+                </button>
+              </Dialog.Close>
+              <button
+                type="submit"
+                disabled={mutation.isPending}
+                className="flex-1 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {mutation.isPending ? "创建中..." : "创建"}
+              </button>
+            </div>
+          </form>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
