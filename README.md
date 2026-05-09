@@ -21,7 +21,7 @@
 需要 Ubuntu 或 Debian，Incus 会由脚本自动安装。
 
 ```bash
-curl -fsSL https://github.com/0xUnixIO/incuspace/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/0xUnixIO/incuspace/main/scripts/install.sh | bash
 ```
 
 脚本会自动完成：
