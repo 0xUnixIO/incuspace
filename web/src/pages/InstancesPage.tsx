@@ -4,14 +4,16 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import * as Dialog from "@radix-ui/react-dialog";
 import { api, type Instance, type InstanceAction, type CreateInstanceRequest, type IncusOperation } from "../lib/api";
-import { Play, Square, RotateCw, Trash2, Plus, Terminal, X, Loader2, KeyRound } from "lucide-react";
+import { Play, Square, RotateCw, Trash2, Plus, Terminal, X, Loader2, KeyRound, Copy } from "lucide-react";
 import { cn } from "../lib/utils";
+import { displayInstanceName } from "../lib/instance";
 
 const statusColor: Record<string, string> = {
   Running: "bg-green-500/20 text-green-400 border-green-500/30",
   Stopped: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
   Frozen: "bg-blue-500/20 text-blue-400 border-blue-500/30",
   Error: "bg-red-500/20 text-red-400 border-red-500/30",
+  Creating: "bg-blue-500/20 text-blue-300 border-blue-500/30 animate-pulse",
 };
 
 export default function InstancesPage() {
@@ -98,6 +100,7 @@ export default function InstancesPage() {
                 <th className="text-left px-4 py-3 text-muted-foreground font-medium">名称</th>
                 <th className="text-left px-4 py-3 text-muted-foreground font-medium">类型</th>
                 <th className="text-left px-4 py-3 text-muted-foreground font-medium">状态</th>
+                <th className="text-left px-4 py-3 text-muted-foreground font-medium">SSH</th>
                 <th className="text-left px-4 py-3 text-muted-foreground font-medium">描述</th>
                 <th className="px-4 py-3"></th>
               </tr>
@@ -138,15 +141,6 @@ export default function InstancesPage() {
 
 // --- 创建实例弹窗 ---
 
-const COMMON_IMAGES = [
-  { label: "Ubuntu 24.04 LTS", value: "ubuntu/24.04" },
-  { label: "Ubuntu 22.04 LTS", value: "ubuntu/22.04" },
-  { label: "Debian 12", value: "debian/12" },
-  { label: "Alpine 3.20", value: "alpine/3.20" },
-  { label: "OpenWrt 23.05", value: "openwrt/23.05" },
-  { label: "自定义...", value: "__custom__" },
-];
-
 function CreateInstanceDialog({
   open,
   onOpenChange,
@@ -157,11 +151,8 @@ function CreateInstanceDialog({
   onSuccess: () => void;
 }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState<"container" | "virtual-machine">("container");
-  const [imagePreset, setImagePreset] = useState("ubuntu/24.04");
-  const [customImage, setCustomImage] = useState("");
-  const [cpuLimit, setCpuLimit] = useState("");
-  const [memLimit, setMemLimit] = useState("");
+  const [planId, setPlanId] = useState<string>("");
+  const [image, setImage] = useState<string>("");
   const [error, setError] = useState("");
 
   const [submitted, setSubmitted] = useState(false);
@@ -172,11 +163,32 @@ function CreateInstanceDialog({
     queryFn: api.sshKeys.list,
   });
 
+  const { data: plans = [] } = useQuery({
+    queryKey: ["plans"],
+    queryFn: api.plans.list,
+    enabled: open,
+  });
+
+  const { data: images = [] } = useQuery({
+    queryKey: ["allowed-images"],
+    queryFn: api.allowedImages.list,
+    enabled: open,
+  });
+
   const createMutation = useMutation({
     mutationFn: (req: CreateInstanceRequest) => api.instances.create(req),
     onSuccess: () => {
-      setSubmitted(true);
-      onSuccess(); // 刷新列表和 operations
+      toast.success("已提交创建，正在拉取镜像，列表会自动更新");
+      onSuccess();
+      // 直接重置并关闭，不走 handleOpenChange 的 isPending 守卫
+      // （此时 isPending 在 React 状态尚未刷新前仍可能为 true）
+      setName("");
+      setPlanId("");
+      setImage("");
+      setError("");
+      setSubmitted(false);
+      setSelectedKeyIDs([]);
+      onOpenChange(false);
     },
     onError: (e: Error) => {
       setError(e.message);
@@ -184,28 +196,17 @@ function CreateInstanceDialog({
     },
   });
 
-  const imageAlias = imagePreset === "__custom__" ? customImage : imagePreset;
-
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     if (!name.trim()) return setError("请输入实例名称");
-    if (!imageAlias.trim()) return setError("请填写镜像");
-
-    const config: Record<string, string> = {};
-    if (cpuLimit.trim()) config["limits.cpu"] = cpuLimit.trim();
-    if (memLimit.trim()) config["limits.memory"] = memLimit.trim();
+    if (!planId) return setError("请选择套餐");
+    if (!image) return setError("请选择镜像");
 
     createMutation.mutate({
-      name: name.trim(),
-      type,
-      source: {
-        type: "image",
-        alias: imageAlias.trim(),
-        server: "https://images.linuxcontainers.org",
-        protocol: "simplestreams",
-      },
-      config: Object.keys(config).length ? config : undefined,
+      display_name: name.trim(),
+      plan_id: planId,
+      image,
       ssh_key_ids: selectedKeyIDs.length ? selectedKeyIDs : undefined,
     });
   }
@@ -213,11 +214,8 @@ function CreateInstanceDialog({
   function handleOpenChange(v: boolean) {
     if (!createMutation.isPending) {
       setName("");
-      setType("container");
-      setImagePreset("ubuntu/24.04");
-      setCustomImage("");
-      setCpuLimit("");
-      setMemLimit("");
+      setPlanId("");
+      setImage("");
       setError("");
       setSubmitted(false);
       setSelectedKeyIDs([]);
@@ -225,11 +223,17 @@ function CreateInstanceDialog({
     }
   }
 
+  function planAvailable(p: typeof plans[number]): boolean {
+    if (!p.enabled) return false;
+    if (p.stock != null && p.sold >= p.stock) return false;
+    return true;
+  }
+
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-md bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-lg bg-card border border-border rounded-lg shadow-xl p-6 space-y-5 max-h-[85vh] overflow-y-auto">
           <div className="flex items-center justify-between">
             <Dialog.Title className="text-base font-semibold">新建实例</Dialog.Title>
             <Dialog.Close className="text-muted-foreground hover:text-foreground transition-colors">
@@ -266,77 +270,65 @@ function CreateInstanceDialog({
               />
             </Field>
 
-            {/* 类型 */}
-            <Field label="类型">
-              <div className="flex gap-2">
-                {(["container", "virtual-machine"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setType(t)}
-                    className={cn(
-                      "flex-1 py-1.5 rounded-md text-sm border transition-colors",
-                      type === t
-                        ? "border-primary/50 bg-primary/10 text-primary"
-                        : "border-border text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {t === "container" ? "容器" : "虚拟机"}
-                  </button>
-                ))}
-              </div>
-              {type === "virtual-machine" && (
-                <p className="text-xs text-yellow-500/80 mt-1.5">
-                  ⚠️ 虚拟机需要宿主机支持 KVM（/dev/kvm），OrbStack VM 等嵌套环境可能不支持。
-                </p>
+            {/* 套餐选择 */}
+            <Field label="套餐">
+              {plans.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无可用套餐，请联系管理员</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {plans.map((p) => {
+                    const available = planAvailable(p);
+                    const selected = planId === p.id;
+                    const stockLabel = p.stock == null ? "∞" : `${p.sold}/${p.stock}`;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        disabled={!available}
+                        onClick={() => setPlanId(p.id)}
+                        className={cn(
+                          "text-left p-3 rounded-md border transition-colors",
+                          selected
+                            ? "border-primary/60 bg-primary/10"
+                            : "border-border hover:border-border/70",
+                          !available && "opacity-50 cursor-not-allowed"
+                        )}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">{p.name}</span>
+                          <span className="text-[10px] text-muted-foreground">{stockLabel}</span>
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                          <div>{p.cpu} 核 · {p.memory_mb} MB</div>
+                          <div>{p.traffic_gb} GB / 月 · {p.bandwidth_mbps} Mbps</div>
+                          <div>{p.ports} 端口</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </Field>
 
             {/* 镜像 */}
             <Field label="镜像">
-              <select
-                value={imagePreset}
-                onChange={(e) => setImagePreset(e.target.value)}
-                className={inputCls}
-              >
-                {COMMON_IMAGES.map((img) => (
-                  <option key={img.value} value={img.value}>
-                    {img.label}
-                  </option>
-                ))}
-              </select>
-              {imagePreset === "__custom__" && (
-                <input
-                  value={customImage}
-                  onChange={(e) => setCustomImage(e.target.value)}
-                  placeholder="例: ubuntu/22.04 或 images:alpine/3.19"
-                  className={cn(inputCls, "mt-2")}
-                />
+              {images.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无可用镜像，请联系管理员</p>
+              ) : (
+                <select
+                  value={image}
+                  onChange={(e) => setImage(e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="">请选择...</option>
+                  {images.map((img) => (
+                    <option key={img.id} value={img.alias}>
+                      {img.alias}{img.description ? ` — ${img.description}` : ""}
+                    </option>
+                  ))}
+                </select>
               )}
-              <p className="text-xs text-muted-foreground mt-1">
-                来源: images.linuxcontainers.org
-              </p>
             </Field>
-
-            {/* 资源限制（可选）*/}
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="CPU 限制（可选）">
-                <input
-                  value={cpuLimit}
-                  onChange={(e) => setCpuLimit(e.target.value)}
-                  placeholder="例: 2"
-                  className={inputCls}
-                />
-              </Field>
-              <Field label="内存限制（可选）">
-                <input
-                  value={memLimit}
-                  onChange={(e) => setMemLimit(e.target.value)}
-                  placeholder="例: 512MB"
-                  className={inputCls}
-                />
-              </Field>
-            </div>
 
             {/* SSH 公钥注入（可选）*/}
             {sshKeys.length > 0 && (
@@ -469,7 +461,7 @@ function InstanceRow({
           onClick={onDetail}
           className="font-mono font-medium hover:text-blue-400 transition-colors"
         >
-          {instance.name}
+          {displayInstanceName(instance.name)}
         </button>
       </td>
       <td className="px-4 py-3 text-muted-foreground">
@@ -484,6 +476,13 @@ function InstanceRow({
         >
           {instance.status}
         </span>
+      </td>
+      <td className="px-4 py-3">
+        {instance.port_range_start ? (
+          <SshQuickCell port={instance.port_range_start} />
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        )}
       </td>
       <td className="px-4 py-3 text-muted-foreground">{instance.description || "-"}</td>
       <td className="px-4 py-3">
@@ -511,6 +510,24 @@ function InstanceRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+function SshQuickCell({ port }: { port: number }) {
+  const cmd = `ssh root@${window.location.hostname} -p ${port}`;
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(cmd);
+        toast.success(`已复制：${cmd}`);
+      }}
+      className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground hover:text-foreground transition-colors"
+      title={cmd}
+    >
+      :{port}
+      <Copy className="w-3 h-3" />
+    </button>
   );
 }
 

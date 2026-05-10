@@ -15,8 +15,9 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const { token } = await api.auth.login(username, password);
+      const { token, user } = await api.auth.login(username, password);
       localStorage.setItem("token", token);
+      localStorage.setItem("user", JSON.stringify(user));
       navigate("/instances");
     } catch (err: any) {
       setError(err.message || "登录失败");

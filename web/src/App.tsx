@@ -10,6 +10,9 @@ import ImagesPage from "./pages/ImagesPage";
 import NetworksPage from "./pages/NetworksPage";
 import StoragePage from "./pages/StoragePage";
 import SSHKeysPage from "./pages/SSHKeysPage";
+import UsersPage from "./pages/UsersPage";
+import PlansPage from "./pages/PlansPage";
+import AllowedImagesPage from "./pages/AllowedImagesPage";
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem("token");
@@ -47,6 +50,9 @@ export default function App() {
           <Route path="networks" element={<NetworksPage />} />
           <Route path="storage" element={<StoragePage />} />
           <Route path="ssh-keys" element={<SSHKeysPage />} />
+          <Route path="users" element={<UsersPage />} />
+          <Route path="plans" element={<PlansPage />} />
+          <Route path="allowed-images" element={<AllowedImagesPage />} />
         </Route>
       </Routes>
     </>

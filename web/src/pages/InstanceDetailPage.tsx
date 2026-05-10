@@ -6,10 +6,10 @@ import {
 } from "recharts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { toast } from "sonner";
-import { api, type InstanceState, type Snapshot, type SSHKey, type ProxyRule } from "../lib/api";
+import { api, type InstanceState, type Snapshot, type SSHKey, type ProxyRule, type Bandwidth, type Quota, type QuotaPeriod, type QuotaAction } from "../lib/api";
 import { formatBytes, formatPercent } from "../lib/utils";
 import { cn } from "../lib/utils";
-import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw, KeyRound, Check, GitMerge, Copy } from "lucide-react";
+import { ArrowLeft, Cpu, MemoryStick, Network, Terminal, FolderOpen, Pencil, X, Plus, Trash2, RotateCw, KeyRound, Check, GitMerge, Copy, Gauge, AlertTriangle } from "lucide-react";
 
 const MAX_POINTS = 60;
 const INTERVAL_MS = 2000;
@@ -39,6 +39,13 @@ export default function InstanceDetailPage() {
   const { data: instance } = useQuery({
     queryKey: ["instance", name],
     queryFn: () => api.instances.get(name!),
+  });
+
+  const { data: panelInfo } = useQuery({
+    queryKey: ["panel-info", name],
+    queryFn: () => api.instances.panelInfo(name!),
+    enabled: !!name,
+    retry: false,
   });
 
   const { data: snapshots = [] } = useQuery({
@@ -170,7 +177,7 @@ export default function InstanceDetailPage() {
 
       {/* 配置信息 */}
       {instance && (
-        <div className="grid grid-cols-2 gap-4">
+        <div className={panelInfo?.plan ? "grid grid-cols-1 lg:grid-cols-3 gap-4" : "grid grid-cols-2 gap-4"}>
           <InfoCard title="基本信息">
             <InfoRow label="名称" value={instance.name} mono />
             <InfoRow label="类型" value={instance.type === "container" ? "容器" : "虚拟机"} />
@@ -218,6 +225,41 @@ export default function InstanceDetailPage() {
               value={<IpList state={lastStateRef.current} />}
             />
           </InfoCard>
+
+          {panelInfo?.plan && (
+            <InfoCard title="套餐">
+              <InfoRow label="名称" value={panelInfo.plan.name} />
+              <InfoRow
+                label="规格"
+                value={`${panelInfo.plan.cpu} 核 · ${panelInfo.plan.memory_mb} MB`}
+              />
+              <InfoRow
+                label="月流量"
+                value={`${panelInfo.plan.traffic_gb} GB`}
+              />
+              <InfoRow
+                label="带宽"
+                value={`${panelInfo.plan.bandwidth_mbps} Mbps`}
+              />
+              <InfoRow
+                label="端口范围"
+                value={
+                  <span className="font-mono">
+                    {panelInfo.port_range_start}–{panelInfo.port_range_end}
+                  </span>
+                }
+              />
+              <InfoRow
+                label="SSH"
+                value={
+                  <SshHint
+                    host={window.location.hostname}
+                    port={panelInfo.port_range_start}
+                  />
+                }
+              />
+            </InfoCard>
+          )}
         </div>
       )}
 
@@ -304,6 +346,10 @@ export default function InstanceDetailPage() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+
+      {/* 网速 / 流量配额 */}
+      <BandwidthPanel instanceName={name!} />
+      <QuotaPanel instanceName={name!} />
 
       {/* 端口转发 */}
       <ProxyRulesPanel instanceName={name!} />
@@ -436,6 +482,25 @@ function IpList({ state }: { state: InstanceState | null }) {
   return <span className="font-mono text-xs">{ips.join(", ")}</span>;
 }
 
+function SshHint({ host, port }: { host: string; port: number }) {
+  const cmd = `ssh root@${host} -p ${port}`;
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="font-mono text-xs">{cmd}</span>
+      <button
+        onClick={() => {
+          navigator.clipboard.writeText(cmd);
+          toast.success("已复制 SSH 命令");
+        }}
+        className="text-muted-foreground hover:text-foreground transition-colors"
+        title="复制"
+      >
+        <Copy className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function MetricCard({ icon, label, value, sub }: { icon: React.ReactNode; label: string; value: string; sub: string }) {
   return (
     <div className="border border-border rounded-lg p-4 space-y-2">
@@ -499,6 +564,13 @@ function ProxyRulesPanel({ instanceName }: { instanceName: string }) {
     queryFn: () => api.instances.proxyRules.list(instanceName),
   });
 
+  // 实例的端口范围（来自面板登记），用于提示用户合法范围
+  const { data: panelInfo } = useQuery({
+    queryKey: ["panel-info", instanceName],
+    queryFn: () => api.instances.panelInfo(instanceName),
+    retry: false,
+  });
+
   const { data: hostInfo } = useQuery({
     queryKey: ["host-info"],
     queryFn: api.hostInfo,
@@ -555,6 +627,11 @@ function ProxyRulesPanel({ instanceName }: { instanceName: string }) {
         <div className="flex items-center gap-2">
           <GitMerge className="w-4 h-4 text-muted-foreground" />
           <h3 className="text-sm font-medium">端口转发</h3>
+          {panelInfo && panelInfo.port_range_start > 0 && (
+            <span className="text-xs text-muted-foreground ml-2">
+              可用范围 <span className="font-mono">{panelInfo.port_range_start}–{panelInfo.port_range_end}</span>
+            </span>
+          )}
         </div>
         <button
           onClick={() => setShowForm((v) => !v)}
@@ -950,6 +1027,410 @@ function CreateSnapshotDialog({
               </button>
             </div>
           </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+// --- 网速限制 ---
+
+function BandwidthPanel({ instanceName }: { instanceName: string }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+
+  const { data } = useQuery<Bandwidth>({
+    queryKey: ["bandwidth", instanceName],
+    queryFn: () => api.instances.bandwidth.get(instanceName),
+  });
+
+  const has = !!(data?.ingress || data?.egress || data?.priority);
+
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+        <div className="flex items-center gap-2">
+          <Gauge className="w-4 h-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">网速限制</h3>
+          {data?.nic_name && (
+            <span className="text-xs text-muted-foreground font-mono">({data.nic_name})</span>
+          )}
+        </div>
+        <button
+          onClick={() => setOpen(true)}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+          编辑
+        </button>
+      </div>
+      <div className="px-4 py-3 grid grid-cols-3 gap-4 text-sm">
+        <BwItem label="入站 (ingress)" value={data?.ingress} />
+        <BwItem label="出站 (egress)" value={data?.egress} />
+        <BwItem label="优先级 (0-7)" value={data?.priority} />
+      </div>
+      {!has && (
+        <div className="px-4 pb-3 text-xs text-muted-foreground">
+          未限速。修改后会立即对实例生效（运行中也无需重启）。
+        </div>
+      )}
+      <BandwidthDialog
+        open={open}
+        onOpenChange={setOpen}
+        instanceName={instanceName}
+        current={data}
+        onSaved={() => qc.invalidateQueries({ queryKey: ["bandwidth", instanceName] })}
+      />
+    </div>
+  );
+}
+
+function BwItem({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="font-mono">{value || <span className="text-muted-foreground">不限</span>}</div>
+    </div>
+  );
+}
+
+function BandwidthDialog({
+  open, onOpenChange, instanceName, current, onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  instanceName: string;
+  current?: Bandwidth;
+  onSaved: () => void;
+}) {
+  const [ingress, setIngress] = useState("");
+  const [egress, setEgress] = useState("");
+  const [priority, setPriority] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setIngress(current?.ingress ?? "");
+      setEgress(current?.egress ?? "");
+      setPriority(current?.priority ?? "");
+    }
+  }, [open, current]);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.instances.bandwidth.put(instanceName, {
+        nic_name: current?.nic_name ?? "",
+        ingress: ingress.trim(),
+        egress: egress.trim(),
+        priority: priority.trim(),
+      }),
+    onSuccess: () => {
+      toast.success("网速限制已更新");
+      onSaved();
+      onOpenChange(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <Dialog.Title className="text-base font-semibold">编辑网速限制</Dialog.Title>
+            <Dialog.Close className="text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </Dialog.Close>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">入站 (ingress)</label>
+              <input
+                value={ingress}
+                onChange={(e) => setIngress(e.target.value)}
+                placeholder="留空不限，例: 100Mbit"
+                className={inputCls}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">出站 (egress)</label>
+              <input
+                value={egress}
+                onChange={(e) => setEgress(e.target.value)}
+                placeholder="留空不限，例: 50Mbit"
+                className={inputCls}
+              />
+              <p className="text-xs text-muted-foreground">支持单位 <code>bit / kbit / Mbit / Gbit</code></p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">优先级</label>
+              <input
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+                placeholder="留空不设置，0-7（数字越大越优先）"
+                className={inputCls}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <Dialog.Close asChild>
+              <button className="flex-1 py-2 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground transition-colors">
+                取消
+              </button>
+            </Dialog.Close>
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+              className="flex-1 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {mutation.isPending ? "保存中..." : "保存"}
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+// --- 流量配额 ---
+
+const GIB = 1024 * 1024 * 1024;
+
+function QuotaPanel({ instanceName }: { instanceName: string }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+
+  const { data } = useQuery<Quota>({
+    queryKey: ["quota", instanceName],
+    queryFn: () => api.instances.quota.get(instanceName),
+    refetchInterval: 10_000,
+  });
+
+  const enabled = !!data?.enabled;
+  const used = data?.used_bytes ?? 0;
+  const limit = data?.limit_bytes ?? 0;
+  const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+
+  const reset = useMutation({
+    mutationFn: () => api.instances.quota.reset(instanceName),
+    onSuccess: () => {
+      toast.success("用量已重置");
+      qc.invalidateQueries({ queryKey: ["quota", instanceName] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api.instances.quota.delete(instanceName),
+    onSuccess: () => {
+      toast.success("配额已移除");
+      qc.invalidateQueries({ queryKey: ["quota", instanceName] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+        <div className="flex items-center gap-2">
+          <Network className="w-4 h-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">流量配额</h3>
+          {enabled && data?.triggered && (
+            <span className="flex items-center gap-1 text-xs bg-red-500/15 text-red-400 border border-red-500/20 px-1.5 py-0.5 rounded">
+              <AlertTriangle className="w-3 h-3" />
+              已触发
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {enabled && (
+            <>
+              <button
+                onClick={() => reset.mutate()}
+                disabled={reset.isPending}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+                重置用量
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm("确认移除流量配额？")) remove.mutate();
+                }}
+                disabled={remove.isPending}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:text-red-400 hover:border-red-500/40 transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                移除
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => setOpen(true)}
+            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Pencil className="w-3.5 h-3.5" />
+            {enabled ? "编辑" : "设置配额"}
+          </button>
+        </div>
+      </div>
+
+      {enabled ? (
+        <div className="px-4 py-3 space-y-3">
+          <div className="flex items-baseline justify-between">
+            <div className="text-2xl font-semibold tabular-nums">
+              {formatBytes(used)} <span className="text-sm text-muted-foreground">/ {limit === 0 ? "∞" : formatBytes(limit)}</span>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {data?.period === "monthly" ? "每月重置" : "累计"} · 超额{actionLabel(data?.action)}
+            </div>
+          </div>
+          {limit > 0 && (
+            <div className="h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className={cn(
+                  "h-full transition-all",
+                  pct >= 100 ? "bg-red-500" : pct >= 80 ? "bg-yellow-500" : "bg-blue-500",
+                )}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          )}
+          <div className="text-xs text-muted-foreground">
+            最后采样: {data?.last_poll_at ? new Date(data.last_poll_at).toLocaleString("zh-CN") : "—"}
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 py-3 text-xs text-muted-foreground">
+          未设置配额。设置后由面板每 30 秒采样一次累计流量，超额可自动停机。
+        </div>
+      )}
+
+      <QuotaDialog
+        open={open}
+        onOpenChange={setOpen}
+        instanceName={instanceName}
+        current={data}
+        onSaved={() => qc.invalidateQueries({ queryKey: ["quota", instanceName] })}
+      />
+    </div>
+  );
+}
+
+function actionLabel(a?: QuotaAction): string {
+  switch (a) {
+    case "stop": return "停机";
+    case "freeze": return "冻结";
+    case "notify": return "仅记录";
+    default: return "停机";
+  }
+}
+
+function QuotaDialog({
+  open, onOpenChange, instanceName, current, onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  instanceName: string;
+  current?: Quota;
+  onSaved: () => void;
+}) {
+  const [limitGB, setLimitGB] = useState("100");
+  const [period, setPeriod] = useState<QuotaPeriod>("monthly");
+  const [action, setAction] = useState<QuotaAction>("stop");
+
+  useEffect(() => {
+    if (!open) return;
+    if (current?.enabled) {
+      setLimitGB(((current.limit_bytes || 0) / GIB).toString());
+      setPeriod(current.period);
+      setAction(current.action);
+    } else {
+      setLimitGB("100");
+      setPeriod("monthly");
+      setAction("stop");
+    }
+  }, [open, current]);
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      const gb = parseFloat(limitGB);
+      if (isNaN(gb) || gb < 0) throw new Error("配额必须是非负数字");
+      return api.instances.quota.set(instanceName, Math.round(gb * GIB), period, action);
+    },
+    onSuccess: () => {
+      toast.success("流量配额已保存");
+      onSaved();
+      onOpenChange(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-lg shadow-xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <Dialog.Title className="text-base font-semibold">流量配额</Dialog.Title>
+            <Dialog.Close className="text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-4 h-4" />
+            </Dialog.Close>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">配额 (GB)</label>
+              <input
+                value={limitGB}
+                onChange={(e) => setLimitGB(e.target.value)}
+                placeholder="0 表示不限"
+                inputMode="decimal"
+                className={inputCls}
+              />
+              <p className="text-xs text-muted-foreground">统计 ↑↑ 出 + ↓↓ 入 总和（不含 lo 接口）</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">周期</label>
+              <select
+                value={period}
+                onChange={(e) => setPeriod(e.target.value as QuotaPeriod)}
+                className={inputCls}
+              >
+                <option value="monthly">每月（自然月 1 号清零）</option>
+                <option value="total">累计（不重置）</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-muted-foreground">超额动作</label>
+              <select
+                value={action}
+                onChange={(e) => setAction(e.target.value as QuotaAction)}
+                className={inputCls}
+              >
+                <option value="stop">停机（force stop）</option>
+                <option value="freeze">冻结（freeze）</option>
+                <option value="notify">仅记录</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <Dialog.Close asChild>
+              <button className="flex-1 py-2 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground transition-colors">
+                取消
+              </button>
+            </Dialog.Close>
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+              className="flex-1 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {mutation.isPending ? "保存中..." : "保存"}
+            </button>
+          </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

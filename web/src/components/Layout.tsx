@@ -1,7 +1,8 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { Server, Image, Network, Database, LogOut, Activity, KeyRound } from "lucide-react";
+import { Server, Image, Network, Database, LogOut, Activity, KeyRound, Users, Package, Disc } from "lucide-react";
+import { getCurrentUser, isAdmin, logout as doLogout } from "../lib/auth";
 
-const nav = [
+const baseNav = [
   { to: "/instances", icon: Server, label: "实例" },
   { to: "/images", icon: Image, label: "镜像" },
   { to: "/networks", icon: Network, label: "网络" },
@@ -9,10 +10,19 @@ const nav = [
   { to: "/ssh-keys", icon: KeyRound, label: "SSH 公钥" },
 ];
 
+const adminNav = [
+  { to: "/users", icon: Users, label: "用户管理" },
+  { to: "/plans", icon: Package, label: "套餐" },
+  { to: "/allowed-images", icon: Disc, label: "镜像白名单" },
+];
+
 export default function Layout() {
   const navigate = useNavigate();
+  const user = getCurrentUser();
+  const nav = isAdmin() ? [...baseNav, ...adminNav] : baseNav;
+
   function logout() {
-    localStorage.removeItem("token");
+    doLogout();
     navigate("/login");
   }
 
@@ -42,6 +52,14 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+        {user && (
+          <div className="px-5 py-3 text-xs text-muted-foreground border-t border-border">
+            <div className="truncate">{user.username}</div>
+            <div className="text-[10px] opacity-60">
+              {user.role === "admin" ? "管理员" : "普通用户"}
+            </div>
+          </div>
+        )}
         <button
           onClick={logout}
           className="flex items-center gap-3 px-5 py-4 text-sm text-muted-foreground hover:text-destructive transition-colors border-t border-border"
